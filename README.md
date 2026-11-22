@@ -36,6 +36,21 @@ Full guide (Chinese): [docs/USAGE.md](docs/USAGE.md) · 使用说明见 [docs/US
 
 Script format: see `docs/SCRIPT.md`. Memory map of the build: `docs/MAP.md`.
 
+### Decompiled functions / 反编译函数
+
+`docs/MAP.md` cites decompiled game functions as evidence. They are Capcom's code and are not in this
+repository; `tools/decompile.ps1` rebuilds them in `dump/decomp/` from your own copy of the game, with
+Ghidra 12.2+ and a JDK it accepts (JDK 25). The function list is `tools/ghidra/functions.txt`.
+
+`docs/MAP.md` 引用的反编译函数属于 Capcom 的代码，不放在仓库里。用 `tools/decompile.ps1` 从你自己的游戏生成到
+`dump/decomp/`：先正常启动游戏（不要用 `start_game.bat`），然后运行
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\decompile.ps1 -GhidraDir <Ghidra 目录> -JavaHome <JDK 25 目录>
+```
+
+第一次会导入并分析整个程序，要十几到几十分钟；之后几秒钟就能重新导出。
+
 `runs/` holds a few example scripts. `tools/` holds the probes and tests used while developing; they are
 not needed to use the tool.
 

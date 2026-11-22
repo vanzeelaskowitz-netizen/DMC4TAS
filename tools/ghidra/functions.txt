@@ -1,0 +1,40 @@
+# Functions that tools\decompile.ps1 exports from the game, one per line: VA, then a note.
+# VAs are preferred virtual addresses (image base 0x400000). agent.js uses RVAs: VA = RVA + 0x400000.
+# An address inside a function exports the whole function; the file is named after its entry point.
+# Build: Steam DMC4SE 24329835. Output goes to dump\decomp\, which is never published.
+
+# Combat data (docs\MAP.md, evidence "反")
+0x5D1F10  player position read through sMediator
+0x5E6720  key bindings table by character ID
+0x5EB0D0  global time scale and Turbo
+0x5EB160  sWorkRate time component setter
+0x5EEEF0  native "can Enemy Step" check
+0x5EF0E0  Enemy Step sphere mask
+0x663440  uDamage
+0x681C50  uEm000 damage registration
+0x68FB20  enemy behaviour update, inline RNG
+0x8C1490  player input: cPeripheral
+0x8C1A60  player input: cInterface
+0x8C1C10  player input: key mapping
+0x8C3460  lock-on target update
+0x8C6D50  grounded flag
+0x8C80A0  direction input
+0x8C9AF0  player property registration (mIsMove)
+0x90A870  enemy property registration (mPhase)
+0x92A890  Enemy Step trigger
+0x9EFBD0  combat RNG seed
+
+# Engine hooks used by tas\agent.js (RVA in agent.js = VA - 0x400000)
+0x9D1A70  per-frame entry, the frame gate (agent.js 0x5d1a70)
+0xAB4DCB  frame delta read for the virtual clock (agent.js 0x6b4dcb)
+0xAB853E  keyboard GetDeviceState call site (agent.js 0x6b853e)
+0xAB2160  window focus handler (agent.js 0x6b2160)
+0xC05F80  music streaming thread body (RVA 0x805f80)
+0xC0CA60  reference drop released from the XAudio2 thread (agent.js 0x80ca60)
+0xC420B0  GPU resource release (agent.js 0x8420b0)
+0xA6DFD0  deferred delete list sweep (agent.js 0x66dfd0)
+
+# MT Framework heaps (docs\MAP.md, rollback addresses)
+0x53B7A0  heap descriptor constructor
+0x9F0BD0  heap range initialisation
+0x9F04A0  heap block free

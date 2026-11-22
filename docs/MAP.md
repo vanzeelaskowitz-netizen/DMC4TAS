@@ -4,6 +4,8 @@
 
 证据简称：**静**为[本构建的 Capstone 指令、属性注册和现场对象身份](../logs/combat-static.txt)，**反**为[按 VA 命名的 Ghidra 文件](../dump/decomp/)，**键**为[最终 M1 两组逐帧记录](../logs/combat-m1-final.json)，**命中**为[实战帧 331–339](../logs/combat-trial-094116.jsonl)，**踩敌**为[实战帧 1–115](../logs/combat-trial-094407.jsonl)，**观察**为[无输入覆盖的逐帧记录](../logs/combat-20261118-094504-150744.jsonl)。JSONL 的行号与该次采集帧号一致。
 
+**反**所指的文件属于游戏代码，不随仓库发布，用 `tools\decompile.ps1` 在本机生成到 `dump\decomp\`，函数清单见 `tools\ghidra\functions.txt`。`logs\` 下的记录同样只在开发机上。
+
 | 名称 | VA、指针链或算法 | 类型 | 等级及证据 |
 |---|---|---|---|
 | 玩家 | M = [0x1154B34]，P = [M+0x24]。本轮辨认为 uPlayerNero | 指针 | 运行时验证；静 0x5CF755，反 005d1f10，踩敌 |

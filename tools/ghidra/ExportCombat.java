@@ -17,7 +17,14 @@ public class ExportCombat extends GhidraScript {
         try {
             if (!decompiler.openProgram(currentProgram)) throw new IllegalStateException(decompiler.getLastMessage());
             for (int i = 1; i < args.length; i++) {
-                Function f = getFunctionContaining(toAddr(Long.decode(args[i])));
+                var at = toAddr(Long.decode(args[i]));
+                Function f = getFunctionContaining(at);
+                if (f == null) {
+                    // Auto-analysis missed some small functions; define one at the requested entry.
+                    // With -readOnly the change stays in memory and the project is not modified.
+                    f = createFunction(at, null);
+                    if (f != null) println("Defined a function at " + args[i]);
+                }
                 if (f == null) { printerr("No function at " + args[i]); continue; }
                 String va = f.getEntryPoint().toString();
                 if (!done.add(va)) continue;
