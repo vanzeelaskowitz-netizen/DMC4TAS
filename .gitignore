@@ -1,0 +1,31 @@
+# Python environment (recreate with: py -m venv .venv, then install the packages in docs\TOOLS.md)
+.venv/
+__pycache__/
+*.pyc
+
+# Memory dump of the game executable and code decompiled from it: Capcom's code, never published
+dump/
+
+# Third-party projects cloned for reading only (each has its own repository and licence)
+ref/
+
+# Logs, screenshots and probe data from test runs
+logs/
+
+# Scratch file the probe tools overwrite
+runs/exceed-probe.tas
+
+# Personal recordings and scripts; only the examples listed here are published
+runs/*
+!runs/sample.tas
+!runs/demo.tas
+!runs/streak-example.tas
+!runs/redblade-demo.tas
+!runs/fight-probe.tas
+
+# Notes from the development process (task sheets, reports, machine-specific tool list)
+AGENTS.md
+docs/HANDOFF.md
+docs/TASK_*.md
+docs/REPORT_*.md
+docs/TOOLS.md
