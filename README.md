@@ -21,15 +21,16 @@ Developed by vanzeelaskowitz-netizen together with Claude (Anthropic's AI assist
 ## Requirements
 
 - Windows 10/11, the game in windowed mode.
-- Python 3.13 with a project virtual environment: `py -m venv .venv`, then
-  `.venv\Scripts\python.exe -m pip install frida frida-tools pefile keystone-engine capstone pycaw psutil`.
-- The game is found through Steam; set the `DMC4SE_EXE` environment variable to the executable if it is not.
+- The Steam version of the game, with Steam running.
+- Python 3.13 (64-bit). Run `setup.bat` once: it creates `.venv` and installs `requirements.txt`.
+- The game is found through Steam. If it is not, the first start asks for the executable and remembers it.
 
 ## Use
 
+1. `setup.bat` once, after downloading.
 1. `start_game.bat` starts the game with the tool attached (the player keeps control).
-2. In a room with a character, `tas_player.bat` opens the player and the script window.
-3. Take over, record or write a script, step, step back, play; hand control back when done.
+1. In a room with a character, `tas_player.bat` opens the player and the script window.
+1. Take over, record or write a script, step, step back, play; hand control back when done.
 
 Full guide (Chinese): [docs/USAGE.md](docs/USAGE.md) · 使用说明见 [docs/USAGE.md](docs/USAGE.md)
 

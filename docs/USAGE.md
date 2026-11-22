@@ -4,16 +4,16 @@
 
 ## 一、准备
 
-1. 游戏必须是**窗口模式**。全屏时工具不会冻结游戏。
-2. 装好 Python 3.13，在项目文件夹里建环境并装依赖：
+1. 需要正版 Steam 版《鬼泣4特别版》，Steam 要开着并登录。
+2. 游戏必须是**窗口模式**（游戏里 Options → PC Settings → Full Screen 设成 OFF）。全屏时工具不会冻结游戏。
+3. 安装 [Python 3.13](https://www.python.org/downloads/)（64 位，安装时保留“py launcher”）。
+4. 下载本项目：在 GitHub 页面点 Code → Download ZIP，解压到任意文件夹。
+5. 双击 `setup.bat`。它会建好 Python 环境并装上需要的组件，需要联网，只用做一次。
 
-   ```
-   py -m venv .venv
-   .venv\Scripts\python.exe -m pip install frida frida-tools pefile keystone-engine capstone pycaw psutil
-   ```
+游戏装在哪不用填，工具会从 Steam 里自动找。找不到时，第一次启动会弹出一个窗口让你选
+`DevilMayCry4SpecialEdition.exe`，选一次就记住了。
 
-3. 游戏位置会从 Steam 里自动找。找不到时，把环境变量 `DMC4SE_EXE` 设成 `DevilMayCry4SpecialEdition.exe` 的完整路径。
-4. 构建号不同的话，地址对不上，工具不能用。地址表见 `MAP.md`。
+游戏的构建号必须是 24329835。版本不同的话地址对不上，工具不能用。地址表见 `MAP.md`。
 
 ## 二、启动
 

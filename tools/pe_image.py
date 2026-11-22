@@ -8,6 +8,27 @@ import struct
 
 GAME = "DevilMayCry4SpecialEdition.exe"
 APP_ID = "329050"
+CHOSEN = Path(__file__).resolve().parents[1] / "game_path.txt"
+
+
+def choose_game():
+    """Ask the user where the game is (file dialog) and remember the answer. None when cancelled."""
+    import tkinter
+    from tkinter import filedialog
+    root = tkinter.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        picked = filedialog.askopenfilename(
+            parent=root, title="找不到游戏，请选择 DevilMayCry4SpecialEdition.exe",
+            filetypes=[("鬼泣4特别版", GAME), ("程序", "*.exe")])
+    finally:
+        root.destroy()
+    if not picked:
+        return None
+    path = Path(picked)
+    CHOSEN.write_text(str(path) + "\n", encoding="utf-8")
+    return path
 
 
 def find_game():
@@ -19,6 +40,12 @@ def find_game():
     chosen = os.environ.get("DMC4SE_EXE")
     if chosen:
         return Path(chosen)
+    try:                                        # picked once in the file dialog of start_game
+        remembered = Path(CHOSEN.read_text(encoding="utf-8").strip())
+        if remembered.is_file():
+            return remembered
+    except OSError:
+        pass
     roots = []
     try:
         import winreg

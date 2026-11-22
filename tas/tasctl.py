@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Where the agent appends the game's access violations. Outside the project on purpose: the agent
 # opens it from inside the game and needs a path without non-ASCII characters.
 CRASH_LOG = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "DMC4TAS" / "exception.log"
+(ROOT / "logs").mkdir(exist_ok=True)           # not in the repository: a fresh download has none
 sys.path.insert(0, str(ROOT / "work"))
 sys.path.insert(0, str(ROOT / "tools"))
 

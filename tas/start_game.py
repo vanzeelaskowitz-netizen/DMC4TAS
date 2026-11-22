@@ -42,6 +42,14 @@ def main():
     else:
         if running is not None:
             say("正在关闭正在运行的游戏…")
+        if not watch_launch.EXE_PATH.is_file():
+            # Not in any Steam library that could be found: ask once, the answer is remembered.
+            say("在 Steam 里没有找到游戏，请在弹出的窗口里选择 DevilMayCry4SpecialEdition.exe…")
+            from pe_image import choose_game
+            picked = choose_game()
+            if picked is None:
+                raise RuntimeError("没有选择游戏程序")
+            watch_launch.EXE_PATH = picked
         result = watch_launch.launch(log=say)
         if result["watched"] != 8:
             say("注意：写入监视没有全部打开，后退会用较慢的方式（每次约 0.2 秒）。")

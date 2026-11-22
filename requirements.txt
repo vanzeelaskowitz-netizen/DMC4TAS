@@ -1,0 +1,7 @@
+frida
+frida-tools
+pefile
+keystone-engine
+capstone
+pycaw
+psutil
