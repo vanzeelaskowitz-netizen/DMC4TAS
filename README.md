@@ -23,7 +23,13 @@ Developed by vanzeelaskowitz-netizen together with Claude (Anthropic's AI assist
 - Windows 10/11, the game in windowed mode.
 - The Steam version of the game, with Steam running.
 - Python 3.13 (64-bit). Run `setup.bat` once: it creates `.venv` and installs `requirements.txt`.
-- The game is found through Steam. If it is not, the first start asks for the executable and remembers it.
+- The game is found through Steam. If it is not (for example it was copied to another folder),
+  `start_game.bat` asks for the executable and remembers it (`game_path.txt` / `game_path_dx9.txt`).
+  Only the two Steam builds are supported, checked by SHA-256: every feature depends on that build's
+  memory addresses. Another build is refused with its SHA-256 shown; send it to the author if you want
+  that build supported.
+  找不到游戏时（例如游戏放在别的文件夹），`start_game.bat` 会弹窗让你选择游戏程序并记住。只支持上面两个
+  Steam 版本，靠 SHA-256 识别；其他版本会被拒绝并显示它的 SHA-256，想支持的话请把这串值发给作者。
 
 ## Use
 

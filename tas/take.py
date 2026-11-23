@@ -8,17 +8,18 @@ is replayed once from frame 0. The replay must end in exactly the state the play
 result of that check is reported, never assumed.
 """
 from datetime import datetime
+from pathlib import Path
 import time
 
 from keycodes import KEY_CODES
 from record_boot import Recording
-from rollback import describe_state, fingerprint
+from rollback import describe_state, fingerprint, input_prefix
 from tasctl import ROOT
-from timeline import Timeline, format_frames
+from timeline import Timeline, format_frames, parse_script
 
 # Keys the TAS tool itself listens to (numpad * / + - and F1 F2 F3 F5 for the practice aids).
 # They are taken out of the recording.
-TOOL_DIKS = {0x37, 0xB5, 0x4E, 0x4A, 0x3B, 0x3C, 0x3D, 0x3F}
+TOOL_DIKS = {0x37, 0xB5, 0x4E, 0x4A, 0x3B, 0x3C, 0x3D, 0x3F, 0x40}
 TAKES = ROOT / "runs"
 
 
@@ -32,15 +33,31 @@ def start(server):
         raise RuntimeError("已经在录制了")
     # Look before touching anything: a refused take must leave the game exactly as it was.
     scene = ctl.rpc.recordscene()["scene"]
-    if not in_room(scene):
+    if not in_room(scene) or (getattr(ctl, "build", {}).get("game") == "dx9" and not scene.get("roomClass")):
         raise RuntimeError("要在能操作角色的地方才能录制（不能在菜单、读盘、过场里）")
     from service_operations import dispatch, hand_back, new_route
     returned = False
+    carried = None
     if ctl.rpc.status().get("soundSticky"):
-        # The sound threads have been asleep since a step back. A take lets them run, so first go
-        # back to the state they may wake in (the take then starts there).
-        hand_back(server)
-        returned = True
+        # Something has been restored (a step back, a loaded save), so the sound threads stay
+        # asleep until the game is handed back. A take in a room is silent anyway, so it can go on
+        # from the frame the game is on: it then continues the timeline that led here (the script
+        # becomes those rows plus what is recorded) and inherits the state to hand back in.
+        old = getattr(server, "route", None)
+        usable = (old is not None and old.origin is not None and old.clean is not None and old.checkpoints
+                  and old.checkpoints[0][0].frame == old.origin and not scene.get("paused"))
+        if usable:
+            frame = ctl.status()["frame"] - old.origin
+            text = Path(old.path).read_text(encoding="utf-8-sig") if old.path else ""
+            if input_prefix(parse_script(text), frame) != input_prefix(old.timeline, frame):
+                raise RuntimeError("脚本文件和游戏里正在跑的输入不一样（刚改过脚本还没生效？），先让脚本生效再录制")
+            carried = {"first": old.checkpoints[0][0], "frame": frame, "script": text, "clean": old.clean,
+                       "ticks": getattr(old, "sound_ticks", None)}
+        else:
+            # No timeline to continue: go back to the state the sound threads may wake in; the
+            # take then starts there, as it always did.
+            hand_back(server)
+            returned = True
     try:
         ctl.pause()
     except Exception:
@@ -52,15 +69,30 @@ def start(server):
         raise RuntimeError("游戏没能停在帧闸上，录制没有开始。再按一次试试。")
     if scene.get("paused"):
         server.route = None
-        dispatch(server, "unpause", {})
-    route = new_route(server)
-    # Not the sound-clean state: the sound threads run while the player records.
-    route.save(detail=False)
-    bindings = [(name, *codes) for name, codes in sorted(KEY_CODES.items())]
-    begun = ctl.rpc.recordstart(bindings, False, False, False, True)
+        if dispatch(server, "unpause", {})["paused"]:
+            ctl.rpc.live(False)
+            raise RuntimeError("游戏暂停菜单仍然打开，录制没有开始")
+    route = new_route(server, sticky=carried is not None)
+    if carried:
+        route.clean = carried["clean"]
+        route.sound_ticks = carried["ticks"]
+        route.sound_guarded = False     # frame 0 of this take is a restored state
+    # The take's own first frame. Whether it also is a state to hand back in is settled when the
+    # take stops.
+    try:
+        route.save(detail=False)
+        bindings = [(name, *codes) for name, codes in sorted(KEY_CODES.items())]
+        begun = ctl.rpc.recordstart(bindings, False, False, False, True)
+    except Exception:
+        if carried is not None:
+            server.route = old
+        else:
+            hand_back(server)
+        raise
     server.take = {"first": begun["frame"] + 1, "mapping": begun["mapping"], "rows": [],
-                   "origin": route.origin, "reason": None, "started": time.time()}
-    return {"origin": route.origin, "frame": 0, "returned": returned}
+                   "origin": route.origin, "reason": None, "started": time.time(), "carried": carried}
+    return {"origin": route.origin, "frame": 0, "returned": returned,
+            "continued": carried["frame"] if carried else None}
 
 
 def poll(server):
@@ -81,6 +113,24 @@ def status(server):
     poll(server)
     return {"recording": True, "frames": len(take["rows"]), "reason": take["reason"],
             "parked": server.ctl.rpc.status()["parked"]}
+
+
+def joined(before, frame, recorded):
+    """The timeline `before` up to `frame`, then `recorded` (whose rows count from 1)."""
+    result = Timeline()
+    result.bindings.update(before.bindings)
+    result.bindings.update(recorded.bindings)
+    position = 0
+    for start, end, keys in before.rows:
+        if start > frame:
+            break
+        position = min(end, frame)
+        result.rows.append((start, position, keys))
+    if position < frame:                # the old script ended earlier: nothing was held since
+        result.rows.append((position + 1, frame, frozenset()))
+    for start, end, keys in recorded.rows:
+        result.rows.append((start + frame, end + frame, keys))
+    return result
 
 
 def strip_tool_keys(timeline):
@@ -123,16 +173,24 @@ def stop(server, check=False):
     recording.add(rows)
     timeline = strip_tool_keys(recording.timeline)
     frames = recording.count
+    # A take that went on from frame F of an earlier timeline is written as that timeline's rows
+    # up to F followed by the take, so the file replays from that timeline's frame 0.
+    carried = take.get("carried")
+    before = carried["frame"] if carried else 0
+    written = joined(parse_script(carried["script"]), before, timeline) if carried else timeline
     TAKES.mkdir(exist_ok=True)
-    path = TAKES / f"take-{datetime.now():%Y%m%d-%H%M%S}.tas"
-    path.write_text(format_frames(timeline), encoding="utf-8", newline="\n")
+    path = TAKES / f"take-{datetime.now():%Y%m%d-%H%M%S-%f}.tas"
+    path.write_text(format_frames(written), encoding="utf-8", newline="\n")
     route = server.route
     state = ctl.status()
-    report = {"frames": frames, "path": str(path), "file": path.name,
+    report = {"frames": frames, "path": str(path), "file": path.name, "continued": before if carried else None,
               "unmapped": sorted(f"{code:#x}" for code in recording.unmapped),
               "reason": take["reason"] or result.get("reason"), "parked": result["parked"]}
     if not result["parked"]:
         report["check"] = "录制结束时不在可冻结的房间里，没有做重放核对"
+        return report
+    if route is None:
+        report["check"] = "场景已变化，录制已保存，起点快照已失效"
         return report
     if state["frame"] - route.origin != frames:
         report["check"] = f"帧数对不上（游戏 {state['frame'] - route.origin}，录到 {frames}），没有做重放核对"
@@ -140,9 +198,15 @@ def stop(server, check=False):
     # The game already is in the state these keys produce: attach them without replaying, and keep
     # this moment. The sound threads ran during the take and are held from here on, so this (and
     # not frame 0) is the state they may wake in after any step back.
-    route.timeline, route.path = timeline, str(path)
-    ctl.load(timeline, frames)
-    route.save(detail=False, clean=True)
+    if carried:
+        # Back onto the earlier timeline: its frame 0, the frame the take began on, and now.
+        route.adopt(carried["first"], route.checkpoints[0][0], written, str(path))
+        ctl.load(written, before + frames)
+        route.save(detail=False)
+    else:
+        route.timeline, route.path = timeline, str(path)
+        ctl.load(timeline, frames)
+        route.save(detail=False, clean=True)
     if not check:
         report["check"] = "没有做重放核对"
         return report
@@ -153,12 +217,12 @@ def stop(server, check=False):
         return report
     started = time.perf_counter()
     try:
-        route.goto(0)             # back to frame 0 ...
-        route.goto(frames)        # ... and replay the whole take
+        route.goto(before)                # back to the frame the take began on ...
+        route.goto(before + frames)       # ... and replay the whole take
+        replayed = fingerprint(describe_state(ctl.status()["last"]))
     except Exception as error:
         report["check"] = f"重放失败：{error}"
         return report
-    replayed = fingerprint(describe_state(ctl.status()["last"]))
     report["replay_seconds"] = round(time.perf_counter() - started, 2)
     report["consistent"] = replayed == played
     report["check"] = "重放结果与你打出来的完全一致" if replayed == played else \

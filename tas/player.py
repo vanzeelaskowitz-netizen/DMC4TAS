@@ -12,8 +12,9 @@ import time
 import tkinter as tk
 from ctypes import wintypes
 from datetime import datetime
+from math import dist
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, simpledialog, ttk
 
 VK_ADD, VK_SUBTRACT, VK_MULTIPLY, VK_DIVIDE, WM_HOTKEY = 0x6B, 0x6D, 0x6A, 0x6F, 0x0312
 HOTKEYS = (VK_ADD, VK_SUBTRACT, VK_MULTIPLY, VK_DIVIDE)   # numpad + - * /, system-wide
@@ -24,7 +25,8 @@ for folder in ("tas", "work", "tools"):
 
 from client import Client  # noqa: E402
 from overlay import Overlay  # noqa: E402
-from tasctl import start_service, target_pid  # noqa: E402
+from tasctl import start_service  # noqa: E402
+from start_game import LABELS, running_games, select_game
 from timeline import (RANGE_LINE, expand_lines, expand_text, format_frames, line_frames,  # noqa: E402
                       parse_frames, parse_script)
 
@@ -51,6 +53,8 @@ class Player:
     def __init__(self, root):
         self.root = root
         self.client = None
+        self.game = None
+        self.legacy = False
         self.path = None
         self.length = 0
         self.playing = False
@@ -61,7 +65,7 @@ class Player:
         self.pending = None         # timer of an edit that has not been applied yet
         self.unsent = False         # the service does not have the editor's script yet
         self.script_error = None
-        root.title("DMC4SE 逐帧播放器")
+        root.title("DMC4 逐帧播放器")
         root.configure(bg=BG)
         root.attributes("-topmost", True)
         root.minsize(640, 430)
@@ -78,13 +82,15 @@ class Player:
         self.record_button.pack(side="left", padx=(0, 6))
         # Off by default: replaying the whole take to compare it takes as long as the take.
         self.check_take = tk.BooleanVar(value=False)
-        tk.Checkbutton(top, text="录完重放核对", variable=self.check_take, font=ui, bg=BG, fg=INK,
+        self.check_button = tk.Checkbutton(top, text="录完重放核对", variable=self.check_take, font=ui, bg=BG, fg=INK,
                        selectcolor=PANEL, activebackground=BG, activeforeground=INK, bd=0,
-                       highlightthickness=0).pack(side="left", padx=(0, 10))
+                       highlightthickness=0)
+        self.check_button.pack(side="left", padx=(0, 10))
         # Play with the game's own sound: always from the first frame of the timeline, because that
         # is the state the sound threads can wake in (service_operations.audible_start).
         self.sound_play = tk.BooleanVar(value=False)
         self.sounding = False
+        self.root.after(300, self.enable_drop)      # once both windows exist
         self.control_button = tk.Button(top, text="⏸ 接管", command=self.toggle_control, font=ui, width=10)
         self.control_button.pack(side="left", padx=(0, 6))
         tk.Button(top, text="脚本窗口", command=self.show_script_window, font=ui).pack(side="left")
@@ -121,11 +127,15 @@ class Player:
         # Enemy Step boxes drawn over the game (overlay.py). F6 while the game window is in front.
         self.overlay = Overlay(root)
         self.overlay_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(aids, text="F6 踩头方框", variable=self.overlay_var, font=ui, indicatoron=False,
+        self.overlay_button = tk.Checkbutton(aids, text="F6 踩头方框", variable=self.overlay_var, font=ui, indicatoron=False,
                        selectcolor="#7ee787", padx=8, pady=2,
-                       command=lambda: self.overlay.set(self.overlay_var.get())).pack(side="left", padx=(0, 6))
+                       command=lambda: self.overlay.set(self.overlay_var.get()))
+        self.overlay_button.pack(side="left", padx=(0, 6))
         self.overlay_key = False
         root.after(500, self.overlay_tick)
+        self.coverage = tk.StringVar()
+        tk.Label(root, textvariable=self.coverage, bg=BG, fg=DIM, font=ui,
+                 wraplength=620, justify="left").pack(anchor="w", padx=14)
 
         self.slider = ttk.Scale(root, from_=0, to=1, orient="horizontal")
         self.slider.pack(fill="x", padx=14, pady=(2, 6))
@@ -143,7 +153,7 @@ class Player:
 
         # The input script has a window of its own: one row per frame, the gutter is the frame number.
         self.script_window = window = tk.Toplevel(root)
-        window.title("DMC4SE 输入脚本")
+        window.title("DMC4 输入脚本")
         window.configure(bg=BG)
         window.attributes("-topmost", True)
         window.minsize(480, 360)
@@ -165,9 +175,10 @@ class Player:
         tk.Button(moves, text="1 ▶", command=lambda: self.step(1), font=ui, width=5).pack(side="left")
         # Sound effects and voices only: the music streaming thread crashed when it woke for a play
         # with sound (2026-11-21), so it stays asleep (agent.js, slot 6). Not yet tried in the game.
-        tk.Checkbutton(files, text="播放带音效（从头放，无背景音乐）", variable=self.sound_play, font=ui, bg=BG,
+        self.sound_button = tk.Checkbutton(files, text="播放带音效（从头放，无背景音乐）", variable=self.sound_play, font=ui, bg=BG,
                        fg=INK, selectcolor=PANEL, activebackground=BG, activeforeground=INK, bd=0,
-                       highlightthickness=0).pack(side="right")
+                       highlightthickness=0)
+        self.sound_button.pack(side="right")
         self.fold_all = tk.BooleanVar(value=True)
         tk.Checkbutton(moves, text="折叠相同行", variable=self.fold_all, font=ui, bg=BG, fg=INK,
                        selectcolor=PANEL, activebackground=BG, activeforeground=INK, bd=0, highlightthickness=0,
@@ -179,6 +190,16 @@ class Player:
         self.entry2.pack(side="left")
         self.entry2.bind("<Return>", lambda _: self.goto_entry(self.entry2))
         tk.Label(moves, text="帧", bg=BG, fg=DIM, font=ui).pack(side="left", padx=4)
+        # Save states: keep this frame of this script under a name and come back to it later, also
+        # after handing the game back. They last until the room is left or the game closed.
+        states = tk.Frame(left, bg=BG)
+        states.pack(fill="x", pady=(6, 0))
+        self.save_button = tk.Button(states, text="存档", command=self.save_state, font=ui, width=6)
+        self.save_button.pack(side="left")
+        self.state_button = tk.Button(states, text="读档 ▾", command=self.state_menu, font=ui, width=7)
+        self.state_button.pack(side="left", padx=6)
+        tk.Label(states, text="记下这一帧，之后随时回到这里（换房间、读盘或关游戏后失效）", bg=BG, fg=DIM,
+                 font=("Microsoft YaHei UI", 9), anchor="w").pack(side="left", padx=(4, 0))
         # The same frame slider and frame counter as the main window, so the script can be followed
         # without looking over there.
         self.slider2 = ttk.Scale(left, from_=0, to=1, orient="horizontal")
@@ -279,14 +300,23 @@ class Player:
                 self.client = Client()
                 self.client.call("status")
             except (OSError, RuntimeError):
-                start_service(target_pid(), live=True)   # attach without taking the game away
+                games = running_games()
+                if not games:
+                    raise RuntimeError("未找到运行中的游戏")
+                game = select_game(games, self.root)
+                if not game:
+                    self.root.destroy()
+                    return
+                start_service(games[game], live=True)
                 self.client = Client()
             # Connecting must not take the game away from the player: stay in whatever mode the
             # service is in. Taking over happens on the first step / back / play, or the button.
             state = self.client.call("status")
             mode = state.get("mode")
-            self.note("已连接。" + ("游戏由你操作，切到别的窗口时会自动冻结。" if mode == "observe"
-                                  else "游戏停在帧闸上。"))
+            if mode == "observe":
+                self.note("已连接，游戏由你操作。")
+            else:
+                self.note("已连接，游戏停在帧闸上。")
             # A timeline that is already running (the window was closed and reopened): show its script.
             running = state.get("timelinePath")
             if running and self.path is None and Path(running).is_file():
@@ -294,7 +324,7 @@ class Player:
             self.refresh()
         except Exception as error:
             self.client = None
-            self.note(f"连不上游戏：{error}。请先让游戏进到有敌人的房间（或双击 boot_to_room.bat）。", bad=True)
+            self.note(f"连不上游戏：{error}。请双击 start_game.bat。", bad=True)
             self.root.after(3000, self.connect)
 
     def call(self, command, **arguments):
@@ -401,14 +431,14 @@ class Player:
                 self.set_cheat(name, not self.cheat_vars[name].get())
             self.cheat_keys[key] = down
         down = bool(user32.GetAsyncKeyState(0x75) & 0x8000)          # F6
-        if down and not self.overlay_key and front:
+        if down and not self.overlay_key and front and self.game == "se":
             self.overlay_var.set(not self.overlay_var.get())
             self.overlay.set(self.overlay_var.get())
         self.overlay_key = down
 
     # --- recording a take ----------------------------------------------------------------------
     def toggle_record(self):
-        if self.client is None:
+        if self.client is None or self.record_button.cget("state") == "disabled":
             return
         self.stop_playing()
         if not self.recording:
@@ -422,8 +452,13 @@ class Player:
             self.editor.configure(state="disabled")
             self.file_label.configure(text="录制中…", fg=WARN)
             self.record_button.configure(text="■ 停止录制")
-            self.note(("做过后退，所以游戏先回到了声音线程睡下的那一刻，录制从这里开始。" if started.get("returned") else "")
-                      + "开始录制。点游戏窗口照常操作；切走时游戏冻结、不计入录制。再按小键盘 * 停止。")
+            if started.get("continued") is not None:
+                lead = f"从第 {started['continued']} 帧接着录：停止后，脚本是前面那 {started['continued']} 帧加上这次录的。"
+            elif started.get("returned"):
+                lead = "做过后退，所以游戏先回到了声音线程睡下的那一刻，录制从这里开始。"
+            else:
+                lead = ""
+            self.note(lead + "开始录制。点游戏窗口照常操作；切走时游戏冻结、不计入录制。再按小键盘 * 停止。")
             self.refresh()
             return
         check = self.check_take.get()
@@ -450,7 +485,8 @@ class Player:
             extra.append("有鼠标之类的输入没录进去")
         if report.get("reason"):
             extra.append(f"录制提前结束：{report['reason']}")
-        self.note(f"录了 {report['frames']} 帧，已写进脚本窗口，可以直接改。{report.get('check', '')}。"
+        joined = f"（接在原来的第 {report['continued']} 帧后面）" if report.get("continued") is not None else ""
+        self.note(f"录了 {report['frames']} 帧{joined}，已写进脚本窗口，可以直接改。{report.get('check', '')}。"
                   + "；".join(extra) + "　按“⏮ 起点”再按小键盘 / 看回放。",
                   bad=report.get("consistent") is False)
         self.refresh()
@@ -600,7 +636,7 @@ class Player:
         if not self.ready():
             return
         self.refresh()                       # where the game is now, after a possible take-over
-        if self.sound_play.get() and self.length:
+        if self.sound_play.get() and self.sound_button.cget("state") == "normal" and self.length:
             self.flush_edit()
             result = self.call("play-sound")
             if result is not None:
@@ -624,6 +660,74 @@ class Player:
             self.set_play_text("⏸ 暂停")
             if self.length:
                 self.note(f"正在按脚本播放：第 {self.frame + 1} 帧到第 {self.length} 帧。")
+
+    # --- save states ---------------------------------------------------------------------------
+    def save_state(self):
+        """Keep the current frame of this script under a name (service: state-save)."""
+        if not self.ready():
+            return
+        if self.script_error or self.unsent:
+            self.note("脚本还没有生效（有红色的行？），改好再存档。", bad=True)
+            return
+        name = simpledialog.askstring("存档", "给这个存档起个名字（同名会覆盖）：", parent=self.script_window,
+                                      initialvalue=f"第{self.frame}帧")
+        if not name or not name.strip():
+            return
+        result = self.call("state-save", name=name.strip())
+        if result:
+            self.note(f"已存档“{result['name']}”：第 {result['frame']} 帧，{result['note']}。现在共 {result['count']} 个存档。"
+                      "交还操作后还能读；换房间、读盘或关游戏后失效。")
+
+    def state_menu(self):
+        """The saves that can be loaded, as a menu under the button."""
+        if self.client is None:
+            return
+        try:
+            listing = self.client.call("state-list")
+        except Exception as error:
+            self.note(f"读不到存档列表：{error}", bad=True)
+            return
+        saves = listing.get("saves") or []
+        if not saves:
+            if listing.get("lost"):
+                self.note("之前的存档已经失效了（换过房间、读过盘，或者存档太久显卡资源快满了）。", bad=True)
+            else:
+                self.note("还没有存档。接管后走到想留住的那一帧，点“存档”。")
+            return
+        font = ("Microsoft YaHei UI", 10)
+        menu = tk.Menu(self.script_window, tearoff=0, font=font)
+        for save in saves:
+            menu.add_command(label=f"{save['name']}　　第 {save['frame']} 帧　{save['note']}　存于 {save['made']}",
+                             command=lambda name=save["name"]: self.load_state(name))
+        menu.add_separator()
+        remove = tk.Menu(menu, tearoff=0, font=font)
+        for save in saves:
+            remove.add_command(label=save["name"], command=lambda name=save["name"]: self.delete_state(name))
+        menu.add_cascade(label="删除存档", menu=remove)
+        button = self.state_button
+        menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+
+    def load_state(self, name):
+        """Put the game back on a saved frame; the script window shows the script that leads there."""
+        self.stop_playing()
+        self.flush_edit()
+        if not self.ensure_control():
+            return
+        self.note(f"正在读档“{name}”…（上次交还之后存的档要先等游戏里的声音放完，最多几秒）")
+        self.root.update_idletasks()
+        result = self.call("state-load", name=name)
+        if not result:
+            return
+        self.load(Path(result["path"]))
+        self.refresh()
+        waited = f"，等声音放完用了 {result['waited']} 秒" if result.get("waited") else ""
+        self.note(f"已读档“{name}”：游戏回到第 {result['frame']} 帧{waited}。脚本是 {Path(result['path']).name}，"
+                  "这一帧之后的行可以接着改；这条时间线不能带声音播放。")
+
+    def delete_state(self, name):
+        result = self.call("state-delete", name=name)
+        if result:
+            self.note(f"已删除存档“{name}”，还剩 {result['count']} 个。")
 
     # --- the input script ----------------------------------------------------------------------
     def place_script_window(self):
@@ -1201,6 +1305,29 @@ class Player:
         self.editor.mark_set("insert", "end")
         self.editor.focus_set()
 
+    def enable_drop(self):
+        """Let a .tas file be dragged from Explorer onto either window (needs the tkinterdnd2
+        package; without it the windows simply do not accept drops)."""
+        try:
+            from tkinterdnd2 import DND_FILES, TkinterDnD
+            TkinterDnD._require(self.root)
+            for widget in (self.script_window, self.editor, self.gutter, self.info, self.panel):
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", self.dropped)
+        except Exception as error:
+            self.note(f"拖放打开脚本不可用：{error}")
+
+    def dropped(self, event):
+        files = [Path(name) for name in self.root.tk.splitlist(event.data)]
+        scripts = [path for path in files if path.suffix.lower() in (".tas", ".txt") and path.is_file()]
+        if not scripts:
+            self.note("拖进来的不是 .tas 脚本文件。", bad=True)
+            return
+        self.stop_playing()
+        self.flush_edit()
+        self.load(scripts[0])
+        self.show_script_window()
+
     def open_file(self):
         self.stop_playing()
         self.flush_edit()
@@ -1275,10 +1402,18 @@ class Player:
             self.game_window = int(state.get("gameWindow") or "0", 16) or None
         except ValueError:
             self.game_window = None
-        self.overlay.attach(state.get("gamePid"), self.game_window)
+        self.set_version(state.get("game", "se"), state)
+        self.overlay.attach(state.get("gamePid") if self.game == "se" else None, self.game_window)
         frozen = state.get("parked") and state.get("mode") not in ("observe", "record", "record-finish")
         self.overlay.verdict = ((state.get("last") or {}).get("combat") or {}).get("stepCheck") if frozen else None
-        for name, value in (state.get("cheats") or {}).items():
+        aids = state.get("cheats") or {}
+        coverage = ""
+        if aids.get("hp") or aids.get("kill"):
+            coverage = f"敌人覆盖 {aids.get('enemiesCovered', 0)}/{aids.get('enemies', 0)}"
+            if aids.get("skipped"):
+                coverage += "　已跳过 " + "、".join(aids["skipped"])
+        self.coverage.set(coverage)
+        for name, value in aids.items():
             if name in self.cheat_vars:
                 self.cheat_vars[name].set(bool(value))
         if state.get("mode") in ("record", "record-finish") or self.recording:
@@ -1287,6 +1422,9 @@ class Player:
             if state.get("last"):
                 self.show(state["last"], frames, headline=False)
             return
+        if state.get("savesLost") and state.get("sceneEpoch") != getattr(self, "lost_epoch", None):
+            self.lost_epoch = state.get("sceneEpoch")
+            self.note(f"旧快照已清除（{state['savesLost']}）", bad=True)
         if state.get("mode") == "observe":
             self.control_button.configure(text="⏸ 接管")
             self.set_headline("你在操作游戏" + ("（已冻结，等你切回游戏）" if state.get("parked") else ""))
@@ -1310,6 +1448,33 @@ class Player:
             self.set_play_text("▶ 播放")
             self.note(f"脚本放完了，游戏停在第 {self.frame} 帧。再按播放从头重放；往下接着写就从这里继续放。")
 
+    def set_version(self, game, state):
+        reason = None
+        if game == "dx9":
+            reason = "混音恢复未验证"
+        elif not state.get("guardVoices") or not (state.get("sound") or {}).get("ready"):
+            reason = "声音保护未启用"
+        elif not state.get("soundRouteReady", True):
+            reason = "当前时间线未保护声音"
+        if reason:
+            self.sound_play.set(False)
+        self.sound_button.configure(state="disabled" if reason else "normal",
+                                    text=f"带音效（{reason}）" if reason else "播放带音效（从头放，无背景音乐）")
+        legacy = game == "dx9" and state.get("playerProtocol", 0) < 10
+        if self.game == game and self.legacy == legacy:
+            return
+        self.game, self.legacy = game, legacy
+        self.root.title("DMC4 逐帧播放器 · " + LABELS[game] +
+                        ("（旧服务，重新启动游戏后可录制和存读档）" if legacy else ""))
+        for button in (self.record_button, self.check_button, self.save_button, self.state_button):
+            button.configure(state="disabled" if legacy else "normal")
+        if game == "se":
+            self.overlay_button.configure(state="normal", text="F6 踩头方框")
+        else:
+            self.overlay_var.set(False)
+            self.overlay.set(False)
+            self.overlay_button.configure(state="disabled", text="F6 方框（屏幕投影未验证）")
+
     def show(self, row, frame, headline=True):
         changed = (frame or 0) != self.frame
         self.frame = frame or 0
@@ -1330,6 +1495,13 @@ class Player:
         lines = [(f"键盘按住　{' '.join((row.get('keys') or {}).get('held') or []) or '—'}", None)]
         if not row:
             lines.append(("这是起点（第 0 帧），还没有执行任何一帧。按小键盘 + 走第 1 帧。", "dim"))
+        elif self.game == "dx9":
+            scene = row.get("scene") or {}
+            lines.append((f"原版 DX9 · {scene.get('gameClass') or '场景未知'}　单帧 {row.get('deltaUnits')} 单位", None))
+            if player:
+                lines.append((f"动作 {player['action']}　动画 {player['motion']} @ {player['motionFrame']:.1f}"
+                              f"　角色输入更新 {len(combat['inputUpdates'])} 次　生命 {player['hp']:.0f}", None))
+                lines.append(("位置 ({:.0f}, {:.0f}, {:.0f})".format(*player["position"]), "dim"))
         elif not player:
             lines.append(("这一帧没有读到角色（不在战斗场景，或游戏弹了暂停画面）。", "hot"))
         else:
@@ -1357,10 +1529,17 @@ class Player:
                 lines.append((f"命中停顿中　剩余 {player.get('hitStopTimer') or 0:.1f}", "hot"))
         lines.append(("", None))
         enemies = combat.get("enemies") or []
-        if not enemies:
+        if not enemies and player:
             lines.append(("没有敌人", "dim"))
         for index, enemy in enumerate(sorted(enemies, key=lambda item: item.get("distance") or 0), 1):
             hp = "?" if enemy.get("hp") is None else f"{enemy['hp']:.0f}"
+            if self.game == "dx9":
+                distance = enemy.get("distance")
+                if distance is None and player:
+                    distance = dist(player["position"], enemy["position"])
+                distance_text = "?" if distance is None else f"{distance:.0f}"
+                lines.append((f"敌人{index} {enemy['type']}　生命 {hp}　动作 {enemy['action']}　距离 {distance_text}", None))
+                continue
             inside, can = enemy.get("inSphere"), enemy.get("canStep")
             text = (f"敌人{index} {enemy['type']}　生命 {hp}　距离 {enemy.get('distance') or 0:.0f}　"
                     f"在踩敌球内 {'是' if inside else '否'}　可踩 {'是' if can else '否'}"

@@ -6,7 +6,8 @@ const combat = (() => {
     const root = va => safe(() => at(va).readPointer());
     // The predicate and its mask helper only read actor data. Never call the
     // successful action dispatcher. "none" excludes our own observation hooks.
-    const predicate = new NativeFunction(at(0x5eeef0),'uint8',['pointer'],
+    const dx9 = typeof build !== 'undefined' && build.game === 'dx9';
+    const predicate = dx9 ? null : new NativeFunction(at(0x5eeef0),'uint8',['pointer'],
         {abi:'thiscall', traps:'none', scheduling:'exclusive'});
     const field = (p, off, method) => safe(() => p.add(off)[method]());
     const u32 = (p, off) => field(p, off, 'readU32');
@@ -223,6 +224,75 @@ const combat = (() => {
     //   kill every enemy whose life field is known is kept at 1, so any hit kills it
     const cheats = {hp:false, dt:false, time:false, kill:false};
     let timeHeld = null, killSeen = 0, killCovered = 0;
+    let timerScene = null;
+    const skipped = new Set();
+    function dxPractice() {
+        killSeen = killCovered = 0;
+        skipped.clear();
+        if (!Object.values(cheats).some(Boolean)) return;
+        const cfg = build.practice, slots = build.scene.slots;
+        const singleton = key => pointer(module.base, build.roots[key]);
+        const mediator = singleton('mediator'), area = singleton('area');
+        const p = pointer(mediator, build.scene.player), playerType = type(p);
+        const mission = pointer(area, slots[2]), room = pointer(area, slots[3]);
+        const missionType = type(mission)?.names[0], palace = missionType === 'aBloodyPalace';
+        if (type(mediator)?.names[0] !== 'sMediator' || type(area)?.names[0] !== 'sArea' ||
+            type(pointer(area, slots[1]))?.names[0] !== 'aGame' ||
+            (!palace && !/^aMission\d\d$/.test(missionType)) ||
+            !type(room)?.names.includes('aRoom') || u32(mediator, build.scene.loading) !== 0 ||
+            !playerType?.names.includes('uPlayer') ||
+            !['uPlayerDante', 'uPlayerNero', 'uPlayerNeroTutorial'].includes(playerType.names[0])) {
+            timerScene = null;
+            return;
+        }
+        const hp = f32(p, build.battle.playerHp), max = f32(p, cfg.playerHpMax);
+        if (cheats.hp && hp > 0 && hp < max) p.add(build.battle.playerHp).writeFloat(max);
+        const dt = f32(p, cfg.playerDt), dtMax = f32(p, cfg.playerDtMax);
+        if (cheats.dt && dt !== null && dt >= 0 && dt < dtMax) p.add(cfg.playerDt).writeFloat(dtMax);
+        if (cheats.time) {
+            const key = [missionType, mission, room, p, u32(mediator, build.scene.mission)].join('/');
+            const off = palace ? cfg.palaceRemaining : cfg.missionElapsed;
+            const value = f32(mediator, off);
+            if (key !== timerScene || value === null || value < 0) timeHeld = null;
+            timerScene = key;
+            const change = palace ? timeHeld - value : value - timeHeld;
+            if (timeHeld !== null && change > 0 && change < 30) mediator.add(off).writeFloat(timeHeld);
+            else timeHeld = value;
+        }
+        if (!cheats.hp && !cheats.kill) return;
+        const unit = singleton('unit');
+        if (type(unit)?.names[0] !== 'sUnit') return;
+        const seen = new Set(), vt = module.base.add(cfg.damageVtableRva);
+        const protectedMode = field(mediator, cfg.enemyNoDeath, 'readU8') !== 0;
+        for (let e = pointer(unit, build.battle.enemyLine); id(e) && !seen.has(id(e)) && seen.size < 256;
+             e = pointer(e, build.scene.next)) {
+            seen.add(id(e));
+            const t = type(e);
+            if (!t?.names.includes('uEnemy') || t.names.includes('uPlayer') || e.equals(p)) continue;
+            killSeen++;
+            const offsets = cfg.damageOffsets.filter(off => off + cfg.damageDead < t.size &&
+                pointer(e, off)?.equals(vt));
+            if (!cfg.ordinaryEnemies.includes(t.names[0]) || offsets.length !== 1 || protectedMode) {
+                skipped.add(t.names[0]);
+                continue;
+            }
+            const damage = e.add(offsets[0]);
+            const flags = u32(damage, cfg.damageFlags);
+            if (field(damage, cfg.damageDead, 'readU8') !== 0 ||
+                flags === null || (flags & cfg.noDeathMask) !== 0) {
+                skipped.add(t.names[0]);
+                continue;
+            }
+            const current = f32(damage, cfg.damageHp), limit = f32(damage, cfg.damageMax);
+            if (!(current > 0 && current <= limit)) {
+                skipped.add(t.names[0]);
+                continue;
+            }
+            killCovered++;
+            const target = cheats.kill ? Math.min(1, current) : limit;
+            if (current !== target) damage.add(cfg.damageHp).writeFloat(target);
+        }
+    }
     function cheat() {
         if (!cheats.time) timeHeld = null;
         if (!cheats.hp && !cheats.dt && !cheats.time && !cheats.kill) return;
@@ -271,11 +341,12 @@ const combat = (() => {
         }
     }
     function setCheat(name, on) {
-        if (!(name in cheats)) throw new Error('Unknown switch ' + name);
+        if (!Object.prototype.hasOwnProperty.call(cheats, name)) throw new Error('Unknown switch ' + name);
+        if (name === 'time' && !on) timeHeld = null;
         cheats[name] = !!on;
         return cheatStatus();
     }
-    const cheatStatus = () => ({...cheats, enemies:killSeen, enemiesCovered:killCovered});
+    const cheatStatus = () => ({...cheats, enemies:killSeen, enemiesCovered:killCovered, skipped:[...skipped]});
     return {install, begin, inspect, finish:() => safe(finish), type,
-            cheat:() => safe(cheat), setCheat, cheatStatus, cheatRestored() { timeHeld = null; }};
+            cheat:() => safe(dx9 ? dxPractice : cheat), setCheat, cheatStatus, cheatRestored() { timeHeld = null; }};
 })();

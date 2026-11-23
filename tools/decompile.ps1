@@ -21,29 +21,44 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\decompile.ps1 -GhidraD
 
 .EXAMPLE
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\decompile.ps1 -Only 0x9D1A70,0xC0CA60
+
+.EXAMPLE
+.\tools\decompile.ps1 -Game dx9 -GhidraDir C:\ghidra_12.2_PUBLIC -JavaHome C:\jdk-25
 #>
 param(
     [string]$GhidraDir = $env:GHIDRA_INSTALL_DIR,
     [string]$JavaHome = $env:JAVA_HOME,
     [string]$ProjectDir,
-    [string]$ProjectName = 'dmc4se',
+    [string]$ProjectName,
     [string]$OutDir,
     [string[]]$Only,
-    [string]$MaxHeap = '8G'
+    [string]$MaxHeap = '8G',
+    [ValidateSet('se','dx9')][string]$Game = 'se'
 )
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
 $dump = Join-Path $root 'dump'
-$image = Join-Path $dump 'dmc4se_mem.exe'
-$list = Join-Path $PSScriptRoot 'ghidra\functions.txt'
-if (-not $ProjectDir) { $ProjectDir = Join-Path $dump 'ghidra-project' }
-if (-not $OutDir) { $OutDir = Join-Path $dump 'decomp' }
-
-# .text of an untouched build 24329835 image, as dumped from memory.
 $TextRva = 0x1000
-$TextSize = 10882560
-$TextSha = 'd4a76ad401f44315eee4437c7965f31191938fb0e42f9c0e8fe4d28cfa2265de'
+if ($Game -eq 'dx9') {
+    $imageName = 'dmc4_dx9_mem.exe'
+    $processName = 'DevilMayCry4_DX9'
+    $list = Join-Path $PSScriptRoot 'ghidra\functions_dx9.txt'
+    $TextSize = 7877120
+    $TextSha = '2201cf672a491667f1ac0158a09046a44d043fde4d0d69046bbdd5dd5f5f3418'
+    if (-not $ProjectName) { $ProjectName = 'dmc4dx9' }
+    if (-not $OutDir) { $OutDir = Join-Path $dump 'decomp_dx9' }
+} else {
+    $imageName = 'dmc4se_mem.exe'
+    $processName = 'DevilMayCry4SpecialEdition'
+    $list = Join-Path $PSScriptRoot 'ghidra\functions.txt'
+    $TextSize = 10882560
+    $TextSha = 'd4a76ad401f44315eee4437c7965f31191938fb0e42f9c0e8fe4d28cfa2265de'
+    if (-not $ProjectName) { $ProjectName = 'dmc4se' }
+    if (-not $OutDir) { $OutDir = Join-Path $dump 'decomp' }
+}
+$image = Join-Path $dump $imageName
+if (-not $ProjectDir) { $ProjectDir = Join-Path $dump 'ghidra-project' }
 
 function Get-ShortPath([string]$path) {
     # Ghidra and its scripts mishandle non-ASCII paths; Windows 8.3 folder names avoid that.
@@ -84,18 +99,18 @@ if (-not $java -or -not (Test-Path -LiteralPath $java)) {
 # 1. Image
 New-Item -ItemType Directory -Force -Path $dump | Out-Null
 if (-not (Test-Path -LiteralPath $image)) {
-    $game = @(Get-Process -Name DevilMayCry4SpecialEdition -ErrorAction SilentlyContinue)
-    if ($game.Count -ne 1) {
-        throw 'dump\dmc4se_mem.exe is missing. Start the game normally (not start_game.bat), reach the title screen, then run this again.'
+    $instances = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
+    if ($instances.Count -ne 1) {
+        throw "$imageName is missing. Start $processName normally, reach the title screen, then run this again."
     }
     $python = Join-Path $root '.venv\Scripts\python.exe'
     if (-not (Test-Path -LiteralPath $python)) { throw 'Run setup.bat first: .venv is missing.' }
-    Write-Host "Reading the game image from PID $($game[0].Id)..."
-    & $python -B (Join-Path $root 'tools\dump_memory.py') $game[0].Id
+    Write-Host "Reading the game image from PID $($instances[0].Id)..."
+    & $python -B (Join-Path $root 'tools\dump_memory.py') $instances[0].Id --game $Game
     if ($LASTEXITCODE -ne 0) { throw "dump_memory.py failed ($LASTEXITCODE)" }
 }
 if (-not (Test-Image $image)) {
-    throw 'dump\dmc4se_mem.exe does not match build 24329835 untouched (.text hash differs). Delete it, start the game without the TAS tool and run this again.'
+    throw "$imageName does not match the expected untouched .text for $Game."
 }
 
 # 2 and 3. Ghidra
@@ -116,7 +131,7 @@ $scripts = Get-ShortPath (Join-Path $PSScriptRoot 'ghidra')
 $out = Get-ShortPath $OutDir
 $export = @('-scriptPath', $scripts, '-postScript', 'ExportCombat.java', $out) + $entries
 if (Test-Path -LiteralPath (Join-Path $ProjectDir "$ProjectName.gpr")) {
-    $run = @($project, $ProjectName, '-process', 'dmc4se_mem.exe', '-noanalysis', '-readOnly') + $export
+    $run = @($project, $ProjectName, '-process', $imageName, '-noanalysis', '-readOnly') + $export
     Write-Host "Exporting $($entries.Count) functions from the existing project..."
 } else {
     $run = @($project, $ProjectName, '-import', (Get-ShortPath $image)) + $export

@@ -1,8 +1,9 @@
 """Commands executed serially by the DMC4SE TAS service."""
+import time
 import traceback
 
 from rollback import Rollback
-from timeline import Timeline, parse_script
+from timeline import Timeline, parse_script, read_script
 
 
 TRACE_LIMIT = 200000
@@ -98,9 +99,15 @@ def audible_start(server, args):
         raise RuntimeError("已经在带声音播放了")
     if route is None or route.origin is None or not route.checkpoints:
         raise RuntimeError("还没有时间线：先接管游戏、载入脚本")
-    sound = ctl.rpc.status().get("sound") or {}
+    state = ctl.rpc.status()
+    sound = state.get("sound") or {}
+    if not state.get("guardVoices"):
+        raise RuntimeError("播放带音效暂时关闭了：它用到的声音保护会让“交还操作”崩溃，修好之前先停用")
     if not sound.get("ready"):
         raise RuntimeError(f"声音保护没有装上（{sound.get('error')}），不能带声音播放")
+    if not getattr(route, "sound_guarded", False):
+        raise RuntimeError("这条时间线不能带声音播放：它是读档得到的，或者声音保护是中途才打开的，"
+                           "游戏的声音状态和第 0 帧对不上，放了会崩")
     first = route.checkpoints[0][0]
     if first.frame != route.origin:
         raise RuntimeError("时间线第 0 帧的存档不在了，不能带声音播放")
@@ -146,13 +153,26 @@ def audible_finish(server, stop=False):
     return route.goto(reached)
 
 
-def new_route(server):
+def new_route(server, sticky=False):
     """A fresh timeline. The sound threads must not be asleep for good when it starts, or the new
-    timeline would not know the state they may wake in; if they are, hand back first."""
+    timeline would not know the state they may wake in; if they are, hand back first. `sticky`:
+    the caller passes that state on from the timeline before (a take that continues one)."""
     from rollback import Rollback
-    if server.ctl.rpc.status().get("soundSticky"):
+    state = server.ctl.rpc.status()
+    if state.get("soundSticky") and not sticky:
         raise RuntimeError("做过后退之后要先“交还操作”，才能开始新的时间线")
     server.route = Rollback(server.ctl)
+    # Playing with sound restores the first frame and wakes the sound threads there. That is only
+    # safe when the voice guard was on for the whole timeline: with it off, voices the game drops
+    # are really destroyed, and the first frame still points at them (2026-11-22 crash at
+    # exe+0x809957, a voice with no vtable, after the guard was switched on mid-timeline).
+    server.route.sound_guarded = bool(state.get("guardVoices"))
+    # While save states exist, new timelines store their snapshots against the same full image
+    # as the saves do (when the arenas still lie where they did): one 561 MB image instead of one
+    # per take-over, and a loaded save can be restored page by page.
+    import savestate
+    if savestate.states(server) and getattr(server, "save_base", None) is not None:
+        server.route.engine.base = server.save_base
     return server.route
 
 
@@ -187,6 +207,14 @@ def service(server):
         except Exception:
             server.audible = None
             traceback.print_exc()
+    if getattr(server, "saves", None) and time.monotonic() - getattr(server, "saves_checked", 0) > 2:
+        # Save states end with the room: let their snapshots go as soon as the agent says so.
+        server.saves_checked = time.monotonic()
+        try:
+            import savestate
+            savestate.states(server)
+        except Exception:
+            traceback.print_exc()
     route = getattr(server, "route", None)
     if route is not None and route.origin is not None and not getattr(server, "take", None):
         # The game side lets go by itself when a timeline reaches a loading screen or another room.
@@ -218,15 +246,20 @@ def dispatch(server, command, args):
     if command == "attach":
         if ctl.session is None:
             ctl.attach()
-        return ctl.pause()
+        return ctl.pause() if ctl.build["game"] == "se" else ctl.status()
     if ctl.session is None:
         raise RuntimeError("Enter attach first")
     if command.startswith("record-"):
         from record_boot import dispatch_record
         return dispatch_record(server, command, args)
     if command == "detach":
+        if ctl.build["game"] == "dx9" and getattr(server, "route", None):
+            hand_back(server)
         server.route = None
+        server.m1_origin = None
         return ctl.detach()
+    if command == "m1-fallback-test" and ctl.build["game"] == "dx9":
+        return ctl.rpc.fallbacktest(args["on"])
     if command == "accept":
         if getattr(server, "route", None) and server.route.origin is not None:
             raise RuntimeError("Acceptance would invalidate the active timeline")
@@ -246,7 +279,11 @@ def dispatch(server, command, args):
             finally:
                 ctl.pause()
         if command == "m1-pause":
-            return ctl.pause()
+            state = ctl.pause()
+            # A boot replay can park itself on its last frame. Acceptance starts a new
+            # measurement at this gate, after outstanding replay observations.
+            ctl.rpc.drain()
+            return state
 
     install_trace(server)
     if command == "trace":
@@ -283,6 +320,10 @@ def dispatch(server, command, args):
             ctl.step(24)
             taps += 1
         return {"paused": ctl.rpc.recordscene()["scene"]["paused"], "taps": taps}
+    if command.startswith("state-"):
+        # Named save states: state-save, state-load, state-list, state-delete (savestate.py).
+        import savestate
+        return savestate.dispatch(server, command, args)
 
     route = getattr(server, "route", None)
     if route is None:

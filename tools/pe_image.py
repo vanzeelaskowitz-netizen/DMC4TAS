@@ -9,39 +9,52 @@ import struct
 GAME = "DevilMayCry4SpecialEdition.exe"
 APP_ID = "329050"
 CHOSEN = Path(__file__).resolve().parents[1] / "game_path.txt"
+# Where the user said each build's executable is (written by start_game, never published).
+CHOSEN_FILES = {"se": CHOSEN, "dx9": CHOSEN.with_name("game_path_dx9.txt")}
+GAME_FILES = {"se": (GAME, "鬼泣4特别版"), "dx9": ("DevilMayCry4_DX9.exe", "鬼泣4原版 DX9")}
 
 
-def choose_game():
-    """Ask the user where the game is (file dialog) and remember the answer. None when cancelled."""
+def choose_game(game="se", title=None):
+    """Ask the user where the game is (file dialog). None when cancelled; remember() stores the answer."""
     import tkinter
     from tkinter import filedialog
+    filename, label = GAME_FILES[game]
     root = tkinter.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
     try:
         picked = filedialog.askopenfilename(
-            parent=root, title="找不到游戏，请选择 DevilMayCry4SpecialEdition.exe",
-            filetypes=[("鬼泣4特别版", GAME), ("程序", "*.exe")])
+            parent=root, title=title or f"找不到游戏，请选择 {filename}",
+            filetypes=[(label, filename), ("程序", "*.exe")])
     finally:
         root.destroy()
-    if not picked:
-        return None
-    path = Path(picked)
-    CHOSEN.write_text(str(path) + "\n", encoding="utf-8")
-    return path
+    return Path(picked) if picked else None
 
 
-def find_game():
-    """Where the game's executable is: the DMC4SE_EXE environment variable when it is set, else
-    the Steam library that holds app 329050. When neither is there, a bare file name comes back:
-    attaching to a running game still works by process name, starting it does not."""
+def remember(game, path):
+    CHOSEN_FILES[game].write_text(str(path) + "\n", encoding="utf-8")
+
+
+def forget(game):
+    try:
+        CHOSEN_FILES[game].unlink()
+    except FileNotFoundError:
+        pass
+
+
+def find_game(game="se"):
+    """Resolve the selected build's executable, or return its bare process name."""
     import os
     import re
-    chosen = os.environ.get("DMC4SE_EXE")
+    filename, app, variable = {
+        "se": (GAME, APP_ID, "DMC4SE_EXE"),
+        "dx9": ("DevilMayCry4_DX9.exe", "45700", "DMC4_DX9_EXE"),
+    }[game]
+    chosen = os.environ.get(variable)
     if chosen:
         return Path(chosen)
-    try:                                        # picked once in the file dialog of start_game
-        remembered = Path(CHOSEN.read_text(encoding="utf-8").strip())
+    try:                                       # picked in the file dialog of start_game
+        remembered = Path(CHOSEN_FILES[game].read_text(encoding="utf-8").strip())
         if remembered.is_file():
             return remembered
     except OSError:
@@ -68,11 +81,22 @@ def find_game():
         libraries += [Path(item.replace("\\\\", "\\")) for item in re.findall(r'"path"\s+"([^"]+)"', text)]
     for library in libraries:
         apps = library / "steamapps"
-        if (apps / f"appmanifest_{APP_ID}.acf").exists():
-            candidate = apps / "common" / "Special Edition" / GAME
+        manifest = apps / f"appmanifest_{app}.acf"
+        if manifest.is_file():
+            folder = "Special Edition"
+            if game == "dx9":
+                try:
+                    contents = manifest.read_text(encoding="utf-8-sig", errors="replace")
+                except OSError:
+                    continue
+                install = re.search(r'"installdir"\s+"([^"]+)"', contents)
+                if not install:
+                    continue
+                folder = install[1]
+            candidate = apps / "common" / folder / filename
             if candidate.exists():
                 return candidate
-    return Path(GAME)
+    return Path(filename)
 
 
 EXE = find_game()

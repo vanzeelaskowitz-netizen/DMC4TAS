@@ -1,7 +1,6 @@
 """记录 DMC4SE 自然运行的调度帧和战斗数据。按 Ctrl+C 停止。"""
 import argparse
 from datetime import datetime
-from hashlib import sha256
 import json
 from queue import Empty, Queue
 import signal
@@ -10,7 +9,8 @@ from time import monotonic
 
 import frida
 from client import Client, STATE
-from tasctl import EXE, EXPECTED_SHA, ROOT, target_pid
+from tasctl import ROOT, target_pid
+from build_profile import identify
 from rollback_memory import session_owner
 
 
@@ -34,7 +34,7 @@ def summary(row):
 
 def run_passive(args):
     pid = target_pid()
-    if sha256(EXE.read_bytes()).hexdigest() != EXPECTED_SHA:
+    if identify(pid)["game"] != "se":
         raise RuntimeError("当前程序只支持 Steam Build 24329835")
     log = ROOT / "logs" / f'combat-{datetime.now():%Y%m%d-%H%M%S-%f}.jsonl'
     mailbox = Queue()

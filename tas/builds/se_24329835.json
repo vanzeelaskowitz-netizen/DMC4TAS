@@ -1,0 +1,106 @@
+{
+  "id": "se_24329835",
+  "game": "se",
+  "sha256": "ea27c157c5f92e722b2ec0c9f8005a4b71607a8046109ae5a98303007921cd82",
+  "process": "DevilMayCry4SpecialEdition.exe",
+  "steamAppId": 329050,
+  "config": "CAPCOM/DEVILMAYCRY4SPECIALEDITION/config.ini",
+  "rollback": true,
+  "strategy": {
+    "clock": "qpc",
+    "focus": "thiscall",
+    "keys": "asyncKey",
+    "render": "dxgi"
+  },
+  "roots": {
+    "main": "0xd8d45c",
+    "keyboard": "0xd8d468",
+    "renderer": "0xd8d42c",
+    "area": "0xd8d448",
+    "mediator": "0xd54b34",
+    "unit": "0xd8d450",
+    "clock": "0xd8d45c",
+    "gameMode": "0xd84c78"
+  },
+  "sites": {
+    "frame": "0x5d1a70",
+    "focus": "0x6b2160",
+    "sample": "0x6b4dcb",
+    "diCall": "0x6b853e",
+    "diReturn": "0x6b8541"
+  },
+  "imports": {
+    "qpc": "0xa6209c",
+    "millis": "0xa62324",
+    "keys": "0xa62218"
+  },
+  "clock": {
+    "previous": "0x28100",
+    "seconds": "0x280e8",
+    "absolute": "0x280e0",
+    "reciprocal": "0x28120",
+    "sampleCounter": "0x60",
+    "accum": "0x50",
+    "deadline": "0x58",
+    "units": "0x70"
+  },
+  "fields": {
+    "active": "0x2555",
+    "renderDevice": "0x4727d8",
+    "presentSlot": 8,
+    "keyDevice": "0xa08",
+    "keyMap": "0x20",
+    "keyBits": "0x120",
+    "hwnd": "0x12c"
+  },
+  "scene": {
+    "slots": [
+      "0x382c",
+      "0x3830",
+      "0x3834",
+      "0x3838"
+    ],
+    "player": "0x24",
+    "loading": "0x14c",
+    "mission": "0x150",
+    "roomId": "0x88",
+    "firstLine": "0x5c",
+    "lastLine": "0x29c",
+    "lineStride": "0x18",
+    "next": "0x14",
+    "cutscene": "0x1a4",
+    "menu": "0x2b4",
+    "menu4": "0x40"
+  },
+  "signatures": {
+    "frame": "558bec83e4f8",
+    "focus": "8b155cd41801",
+    "sample": "0f28caf30f5c",
+    "diCall": "ff50",
+    "diReturn": "85c00f88c200"
+  },
+  "snapshot": {
+    "dataRva": 12120064,
+    "dataSize": 2487240,
+    "slots": [
+      14175588,
+      14175604,
+      14175624,
+      14175628,
+      14175632,
+      14175636,
+      14175596,
+      14175600
+    ],
+    "descriptorSize": 1232,
+    "vt": 11473416,
+    "low": 92,
+    "singletons": [
+      14210140,
+      14210144
+    ],
+    "dtiUnit": 4,
+    "firstSlot": 14175588,
+    "end": 96
+  }
+}

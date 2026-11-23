@@ -102,26 +102,31 @@ def dispatch_record(server, command, args):
     raise ValueError(f"Unknown recording command {command!r}")
 
 
-def ready_process():
+def ready_process(game="se", pid=None):
+    from build_profile import profiles
+    build = next(p for p in profiles() if p["game"] == game)
     try:
-        pid = target_pid()
+        pid = target_pid(pid, game=game)
     except RuntimeError as error:
+        if pid is not None or game == "dx9":
+            raise
         if not str(error).endswith("[]"):
             raise
-        os.startfile("steam://rungameid/329050")
+        os.startfile(f"steam://rungameid/{build['steamAppId']}")
         pid = None
     deadline = time.monotonic() + 60
     window_error = None
     while time.monotonic() < deadline:
         try:
             if pid is None:
-                pid = target_pid()
+                pid = target_pid(game=game)
             with ProcessMemory(pid) as memory:
-                keyboard = memory.u32(0x118D468)
-                render = memory.u32(0x118D42C)
-                if keyboard and render and memory.u32(keyboard + 0xA08) and memory.u32(render + 0x4727D8):
+                keyboard = memory.u32(0x400000 + build["roots"]["keyboard"])
+                render = memory.u32(0x400000 + build["roots"]["renderer"])
+                if keyboard and render and memory.u32(render + build["fields"]["renderDevice"]) and (
+                        game == "dx9" or memory.u32(keyboard + build["fields"]["keyDevice"])):
                     try:
-                        require_windowed(pid)
+                        require_windowed(pid, build["config"])
                     except (OSError, RuntimeError) as error:
                         window_error = error
                     else:

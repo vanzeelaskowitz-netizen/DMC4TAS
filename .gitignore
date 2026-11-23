@@ -32,6 +32,8 @@ docs/TOOLS.md
 
 # Where the user said the game is (written by start_game when Steam does not know)
 game_path.txt
+game_path_dx9.txt
+last_game.txt
 
 # Launchers for a recorded boot route that is specific to one save file
 boot_to_room.bat

@@ -1,0 +1,73 @@
+﻿# Steam 45700 build 21360. Preferred VAs. Output: dump/decomp_dx9/<entry VA>.c
+# Engine and scene
+0x8AEE80 sDevil4Main per-frame dispatch
+0x90D690 frame clock and pacing
+0x90E210 QPC sample and delta seconds
+0x8D9380 WndProc, WM_ACTIVATEAPP
+0x8E08B0 DirectInput and GetKeyboardState fallback
+0x8E0B10 keyboard current, previous and edge bitmaps
+0x48FCA0 sMediator property registration
+0x409990 room properties including pause flag
+0x40BB43 loading object branch and aGame lookup
+# Combat
+0x7A66F0 player property registration
+0x7A91E0 player input sampling
+0x7A9870 keyboard actions and character bindings
+0x7AFD10 peripheral and direction key bindings
+0x7A9550 direction held, press and release bits
+0x7AA930 update or clear selected target actor
+0x7ACEE0 actor velocity and position
+0x7A8CF9 player collision ground flag
+0x7A7DC0 player update, life and hit stop
+0x51C6C0 uDamage HP fields
+0x540A80 enemy damage member registration
+0x540370 enemy animation cursor branches
+0x4A7399 pending actor behaviour and phase
+0x7308B0 enemy hit stop update
+0x64BF6A enemy unit dt zeroing branch
+0x4AB170 Enemy Step sphere test
+0x4AB3A0 eligible sphere mask
+0x42C680 joint world matrix
+0x804970 Enemy Step target selection and action dispatch
+0x4A6800 work rate and Turbo
+0x4A6890 scale by frame units
+0x4055E0 MT19937 output
+0x8BD3B0 MT19937 state transition
+0x545500 enemy decision using shared RNG
+# Pool creation and allocator registry
+0x8AFB20 create engine arenas
+0x8BB160 allocator base registration
+0x8BB6A0 MtHeapAllocator construction and arena allocation
+0x8BB540 default allocator, small allocations
+# State outside snapshots
+0xA412D0 sSoundN initialization
+0xA3E190 first sound worker construction
+0xA3E290 second sound worker construction
+0xB26A20 worker thread dispatch
+0xA3E240 sound worker, one millisecond loop
+0xA3E340 sound worker, fifty millisecond loop
+0x8F33B0 per-frame D3D9 Present
+0x8F0FC0 device lost and Reset
+0x8F60C0 render thread event loop
+0x8FB430 resource reference drop
+0x8FB360 resource list sweep and compaction
+0x8FB2E0 deferred destruction worker
+0x8FE0C0 shader default texture lookup by resource name
+0x8DF530 resource lookup by type and name
+0x899390 title state dispatcher
+0x8999E0 title prompt input
+0x89A310 title menu selection
+0x899850 title transition
+0x89AAF0 title menu navigation
+0x89A900 main title menu controller
+0x89DAA0 title press-any-key decision
+0x89B1B0 title submenu
+# Rollback boundaries and external buffers
+0x90DC80 job batch and serial dispatch
+0x8F3310 choose synchronous or threaded rendering
+0x8F6480 build draw streams, unlock and clean shared textures
+0x8F09D0 shared texture name pair and descriptor lookup
+0xA583C0 assign per-worker dynamic buffer views
+0xA43280 create secondary DirectSound mixer buffer
+0xA4CEE0 DirectSound update body
+0xA3E370 sound loader body

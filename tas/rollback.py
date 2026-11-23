@@ -12,7 +12,6 @@ from timeline import Timeline, read_script
 
 DEFAULT_INTERVAL = 120
 DEFAULT_LIMIT = 120  # one full image plus deltas of about 3.5 MB each: see Snapshot
-DATA_RVA, DATA_SIZE = 0xB8F000, 0x25F3C8
 NEAR = 16            # frames between a step-back target and the extra checkpoint left before it
 GAP = 8 * PAGE       # tracked restore: stretches closer than this are written as one
 DENSE_INTERVAL = 4   # with page tracking: checkpoint spacing while stepping near the target
@@ -23,11 +22,6 @@ DEFAULT_PROFILE = "fields"
 # What save / back / goto use. Only the whole-heap snapshot replays deterministically (2026-11-18).
 ROUTE_PROFILE = "heaps"
 SNAPSHOT_PROFILES = (DEFAULT_PROFILE, "actors", "actor-pool", "heaps")
-# The eight MtScalableAllocator pointers (Global, Temp, Resource, System, Unit, Area, Array/String,
-# Collision) and the two engine singletons that live outside every arena (sApp, sDevil4Main).
-ALLOCATOR_SLOTS = (0x1184D64, 0x1184D74, 0x1184D88, 0x1184D8C, 0x1184D90, 0x1184D94, 0x1184D6C, 0x1184D70)
-OUTSIDE_SINGLETONS = (0x118D45C, 0x118D460)
-ALLOCATOR_SIZE = 0x4D0
 HP_FIELDS = (0x1a50, 0x1a58, 0x1a60, 0x1a70, 0x1a80, 0x2c30, 0x2d80, 0x3e38, 0x85e8)
 
 
@@ -172,13 +166,13 @@ def identity(gate, profile=DEFAULT_PROFILE):
     return fixed if profile == "heaps" else (*fixed, *pointer_fields(gate))
 
 
-def object_size(memory, address):
+def object_size(memory, address, unit=4):
     getter = memory.u32(memory.u32(address) + 16)
     code = memory.read(getter, 6)
     if code[0] != 0xb8 or code[5] != 0xc3:
         raise RuntimeError(f"Unrecognized object type getter at {getter:#x}")
     dti = int.from_bytes(code[1:5], "little")
-    size = (memory.u32(dti + 0x18) & 0x7fffff) * 4
+    size = (memory.u32(dti + 0x18) & 0x7fffff) * unit
     if not 4 <= size <= 0x1000000:
         raise RuntimeError(f"Invalid engine object size {size:#x} at {address:#x}")
     return size
@@ -230,35 +224,53 @@ def unit_heap(memory, at, actors):
     return low, high
 
 
-def heap_ranges(memory, base, at):
+def heap_ranges(memory, base, layout):
     """Whole engine state: .data, every allocator arena with its descriptor, and the outside singletons.
 
     Restoring objects without the allocator's own bookkeeping crashed in the heap unlink routine
     (2026-11-18), so the arenas and their descriptors always travel together.
     """
-    yield ".data", base + DATA_RVA, base + DATA_RVA + DATA_SIZE, MEM_IMAGE
-    writable = [region for region in memory.regions() if region.writable and region.kind == MEM_PRIVATE]
-    for slot in ALLOCATOR_SLOTS:
-        descriptor = memory.u32(at(slot))
-        low, high = memory.u32(descriptor + 0x5c), memory.u32(descriptor + 0x60)
-        if memory.u32(descriptor) != at(0xEF1208) or not 0 < low < high or high - low > 256 << 20:
+    data = base + layout["dataRva"]
+    yield ".data", data, data + layout["dataSize"], MEM_IMAGE
+    writable = [r for r in memory.regions() if r.writable and r.kind == MEM_PRIVATE]
+    covered = set()
+    for slot in layout["slots"]:
+        descriptor = memory.u32(base + slot)
+        if memory.u32(descriptor) != base + layout["vt"]:
             raise RuntimeError(f"Unexpected allocator descriptor at {descriptor:#x}")
-        yield "allocator", descriptor, descriptor + ALLOCATOR_SIZE, MEM_PRIVATE
-        for region in writable:
-            if region.base < high and region.end > low:
-                yield "arena", max(region.base, low), min(region.end, high), MEM_PRIVATE
-    for slot in OUTSIDE_SINGLETONS:
-        singleton = memory.u32(at(slot))
-        yield "singleton", singleton, singleton + object_size(memory, singleton), MEM_PRIVATE
+        low = memory.u32(descriptor + layout["low"])
+        high = (low + memory.u32(descriptor + layout["size"]) if "size" in layout
+                else memory.u32(descriptor + layout["end"]))
+        if not 0 < low < high or high - low > 256 << 20:
+            raise RuntimeError(f"Invalid arena limits at {descriptor:#x}")
+        covered.add(descriptor)
+        yield "allocator", descriptor, descriptor + layout["descriptorSize"], MEM_PRIVATE
+        if "size" in layout:
+            yield "arena", low, high, MEM_PRIVATE
+        else:
+            for region in writable:
+                if region.base < high and region.end > low:
+                    yield "arena", max(region.base, low), min(region.end, high), MEM_PRIVATE
+    for slot in layout["singletons"]:
+        obj = memory.u32(base + slot)
+        covered.add(obj)
+        yield "singleton", obj, obj + object_size(memory, obj, layout["dtiUnit"]), MEM_PRIVATE
+    if "defaultAllocator" in layout:
+        for obj, size in memory.default_blocks(memory.u32(base + layout["defaultAllocator"])):
+            if obj not in covered:
+                yield "default", obj, obj + size, MEM_PRIVATE
 
 
 def snapshot_spans(memory, gate, profile):
     base = int(gate["base"], 16)
     at = lambda address: base + address - 0x400000
+    layout = gate["layout"]
+    if layout["dtiUnit"] == 1 and profile != "heaps":
+        raise ValueError("DX9 requires the heaps profile")
     if profile == DEFAULT_PROFILE:
         return checked_spans(memory, logic_fields(memory, gate, at), base)
     if profile == "heaps":
-        return checked_spans(memory, heap_ranges(memory, base, at), base)
+        return checked_spans(memory, heap_ranges(memory, base, layout), base)
     if profile not in SNAPSHOT_PROFILES:
         raise ValueError(f"Unknown snapshot profile {profile!r}")
     actors = pointer_fields(gate)
@@ -274,7 +286,7 @@ def snapshot_spans(memory, gate, profile):
         ("sWorkRate", memory.u32(at(0x1164B50))),
         ("sCamera", memory.u32(at(0x118D474))),
     ]
-    ranges = [(".data", base + DATA_RVA, base + DATA_RVA + DATA_SIZE, MEM_IMAGE)]
+    ranges = [(".data", base + layout["dataRva"], base + layout["dataRva"] + layout["dataSize"], MEM_IMAGE)]
     for name, address in objects:
         size = object_size(memory, address)
         if name == "sUnit" and profile == "actors":
@@ -645,8 +657,23 @@ class Rollback:
         self.running = False
         return self.engine.restore(self.clean)
 
+    def adopt(self, first, at, timeline, path):
+        """Carry on the timeline a save state belongs to (savestate.py). The game has just been
+        restored to `at`; `first` is frame 0 of that timeline and `timeline` its script."""
+        self.origin = first.frame
+        self.timeline, self.path = timeline, path
+        self.running = False
+        frame = at.frame - self.origin
+        self.checkpoints = [(first, input_prefix(timeline, 0))]
+        if at is not first:
+            self.checkpoints.append((at, input_prefix(timeline, frame)))
+        self.serial = max(getattr(self, "serial", 0), *(getattr(item, "serial", 0) for item, _ in self.checkpoints))
+        self.controller.load(timeline, frame)
+        return frame
+
     def save(self, detail=True, clean=False):
         snapshot = self.engine.capture()
+        self.last_saved = snapshot
         if clean:
             self.clean = snapshot
         if self.origin is None:

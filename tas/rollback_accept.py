@@ -1,16 +1,18 @@
 """Run snapshot acceptance through the resident DMC4SE TAS service."""
 import argparse
 from dataclasses import asdict
+from hashlib import sha256
 import json
 from pathlib import Path
 from statistics import median
-from time import perf_counter
+from time import monotonic, perf_counter, sleep
 import traceback
+import zlib
 
 from client import Client
 from tasctl import ROOT
 from rollback import DEFAULT_PROFILE, SNAPSHOT_PROFILES, SnapshotEngine, describe_state, fingerprint
-from rollback_memory import MEM_PRIVATE, ProcessMemory, changed_runs
+from rollback_memory import MEM_PRIVATE, POOL, ProcessMemory, changed_runs
 from timeline import Timeline, format_script, frames, parse_script
 
 
@@ -84,6 +86,21 @@ def events(rows):
     }
 
 
+def update_counts(rows):
+    """Count actual player updates, including a legitimate zero on hit-stop frames."""
+    result = []
+    for frame, row in enumerate(rows, 1):
+        combat = row["combat"]
+        p = combat["player"]
+        # The counter is monotonic across restores; compare it relative to this pass.
+        result.append({"frame": frame, "entry":row["entry"] - rows[0]["entry"] + 1, "reads":row["reads"], "presents":row["presents"],
+                       "updates":len(combat["inputUpdates"]), "samples":combat["inputUpdates"],
+                       "buttons":p["input"], "playerFrozen":p["frozen"], "playerTimer":p["hitStopTimer"],
+                       "enemyFrozen":any(e["frozen"] for e in combat["enemies"]),
+                       "action":p["action"], "cursor":p["motionFrame"]})
+    return result
+
+
 def earlier_jump(timeline, jump):
     rows = {number: held for number, held, _, _ in frames(timeline.rows)}
     if jump <= 1 or "K" in rows[jump-1] or "K" not in rows[jump] or "K" in rows.get(jump+1, ()):
@@ -102,10 +119,151 @@ def presents(rows):
     return sum(row["presents"] == 1 and row["presentResult"] == 0 for row in rows)
 
 
+def menu_smoke(controller):
+    """Hash a fresh read of every byte at each logical frame, independently of write watch."""
+    from rollback import Rollback
+    if controller.build["game"] != "dx9":
+        raise ValueError("Menu smoke requires DX9")
+    route = Rollback(controller)
+    log = {"pid": controller.pid, "build": controller.build["id"], "result": "FAIL"}
+    name = "08-dx9-menu.json"
+    try:
+        deadline = monotonic() + 60
+        while True:
+            scene = controller.rpc.recordscene()["scene"]
+            if scene["gameClass"] in ("aTitle", "aAdvertise"):
+                break
+            if scene["gameClass"] not in (None, "aInit") or monotonic() >= deadline:
+                raise RuntimeError(f"Expected original title or advertise screen, got {scene}")
+            controller.rpc.live()
+            sleep(.1)
+        controller.pause()
+        for _ in range(12):
+            scene = controller.rpc.recordscene()["scene"]
+            if scene["gameClass"] == "aTitle" and scene["menus"] and scene["menus"][0]["state"] >= 3:
+                break
+            if scene["gameClass"] not in ("aAdvertise", "aTitle"):
+                raise RuntimeError("Menu test requires the title screen")
+            play(controller, parse_script("1-3: Enter\n4-60: -"), 60)
+        else:
+            raise RuntimeError("Main menu not reached")
+        for _ in range(24):
+            scene = controller.rpc.recordscene()["scene"]
+            menu = scene["menus"][0]
+            if (menu["state"], menu["phase"]) == (13, 2):
+                break
+            if menu["state"] not in (0, 1, 2, 3, 4, 5, 6, 13):
+                raise RuntimeError(f"Unexpected title submenu {menu}")
+            play(controller, parse_script("1: Left\n2-10: -" if menu["state"] == 3 else "1-10: -"), 10)
+        else:
+            raise RuntimeError("Title cursor did not become interactive")
+        log["scene"] = scene
+        log["base"] = route.save(clean=True)
+        key, undo = ("Down", "Up") if menu["cursor"] == 0 else ("Up", "Down")
+        route.timeline = parse_script(f"1: {key}\n2-49: -\n50: {undo}\n51-120: -")
+        controller.load(route.timeline)
+        base = route.clean
+        log["spans"] = [asdict(s) for s in base.spans]
+        log["bytes"] = base.bytes
+        log["watch"] = controller.status()["watchAvailable"]
+        ranges = [(s.address, s.end) for s in base.spans]
+        def image():
+            with controller.frame_gate() as (gate, _), ProcessMemory(controller.pid) as mem:
+                with mem.quiescent(gate["tid"]):
+                    return mem.read_spans(ranges)
+        def digest(raw):
+            return sha256(b"".join(POOL.map(lambda data: sha256(data).digest(), raw))).hexdigest()
+        hashes = []
+        reference_deltas = []
+        log["passes"] = []
+        for repeat in range(2):
+            if repeat:
+                route.goto(0)
+            rows = []
+            log["passes"].append(rows)
+            for n in range(1, 121):
+                row = route.step(1)[0]
+                raw = image()
+                sig = digest(raw)
+                rows.append({"frame": n, "digest": sig, "menus": row["scene"]["menus"],
+                             "presents": row["presents"], "result": row["presentResult"]})
+                if not repeat:
+                    hashes.append(sig)
+                    # Keep diagnostic bytes for the first mismatch, wherever it occurs.
+                    # These deltas are independent reads and are never restored into the game.
+                    reference_deltas.append([
+                        [(a, zlib.compress(memoryview(image)[a:b], 1)) for a,b in changed_runs(basis, image)]
+                        for basis, image in zip(base.data, raw)])
+                elif sig != hashes[n-1] and "firstDifferences" not in log:
+                    log["firstMismatchFrame"] = n
+                    log["firstDifferences"] = []
+                    for span, basis, runs, after in zip(base.spans, base.data, reference_deltas[n-1], raw):
+                        before = bytearray(basis)
+                        for offset, compressed in runs:
+                            chunk = zlib.decompress(compressed)
+                            before[offset:offset+len(chunk)] = chunk
+                        changed = list(changed_runs(before, after))
+                        if changed:
+                            offsets = [i for a,b in changed for i in range(a,b) if before[i] != after[i]]
+                            log["firstDifferences"].append({"span": asdict(span), "bytes":len(offsets),
+                                "examples":[(hex(i),before[i:i+4].hex(),after[i:i+4].hex()) for i in offsets[:32]]})
+                del raw
+            write_log(name, log)
+        del reference_deltas
+        log["matchingFrames"] = sum(a["digest"] == b["digest"] for a,b in zip(*log["passes"]))
+        log["spansTest"] = []
+        for distance in (1, 10, 100):
+            back = route.back(distance)
+            earlier = digest(image()) == hashes[119-distance]
+            route.goto(120)
+            log["spansTest"].append({"back":distance, "frame":back["frame"], "atTarget":earlier,
+                                     "afterReplay":digest(image()) == hashes[-1]})
+        log["cycles"] = 0
+        for _ in range(50):
+            route.goto(0)
+            rows = route.step(60)
+            if presents(rows) != 60: raise RuntimeError("Present failed during stability test")
+            log["cycles"] += 1
+            if log["cycles"] % 10 == 0: write_log(name, log)
+        state = controller.status()
+        log["guards"] = {key:state[key] for key in ("arenas","soundIdle","sweepsSkipped","keptResources","savesLost","mixStops","mixCursor","shaderCreates","shaderReuses")}
+        log["verification"] = {"every":route.engine.verify_every, "operations":route.engine.fast_operations,
+                               "failures":route.engine.verify_failures}
+        log["cursorMoved"] = all(run[0]["menus"][0]["cursor"] != menu["cursor"]
+                                 and run[49]["menus"][0]["cursor"] == menu["cursor"] for run in log["passes"])
+        if (log["cursorMoved"] and log["matchingFrames"] == 120 and all(t["atTarget"] and t["afterReplay"] for t in log["spansTest"])
+                and route.engine.verify_every == 1 and route.engine.fast_operations and not route.engine.verify_failures
+                and all(row["presents"] == 1 and row["result"] == 0 for run in log["passes"] for row in run)):
+            log["result"] = "PASS"
+    except Exception:
+        log["error"] = traceback.format_exc()
+    finally:
+        try:
+            if route.clean is not None:
+                route.return_clean()
+                live = controller.rpc.live(True)
+                log["handBack"] = {k:live.get(k) for k in ("mode", "mixStops", "mixRestarts", "soundSticky")}
+        except Exception:
+            log["result"], log["cleanupError"] = "FAIL", traceback.format_exc()
+        if route.clean is None:
+            controller.rpc.live()
+        write_log(name, log)
+    return {k:log[k] for k in ("result","matchingFrames","verification","cycles","error") if k in log}
+
+
 def run(server, mode="core", profile=DEFAULT_PROFILE, text=BASELINE, jump=55, effects_text=None):
     from service import heal
 
     controller = server.ctl
+    if mode == "menu":
+        return menu_smoke(controller)
+    dx9 = controller.build["game"] == "dx9"
+    if dx9:
+        profile = "heaps"
+    if dx9 and mode != "inspect":
+        scene = controller.rpc.recordscene()["scene"]
+        if not scene["playerPresent"] or not scene["roomClass"]:
+            raise ValueError("DX9 battle acceptance requires a loaded battle room")
     controller.pause()
     if mode == "inspect":
         with controller.frame_gate() as (gate, _):
@@ -116,7 +274,7 @@ def run(server, mode="core", profile=DEFAULT_PROFILE, text=BASELINE, jump=55, ef
 
     engine = SnapshotEngine(controller, profile)
     log = {"pid": controller.pid, "profile": profile}
-    name = f"rollback-{profile}-{mode}.json"
+    name = f"rollback-{controller.build['id']}-{profile}-{mode}.json" if dx9 else f"rollback-{profile}-{mode}.json"
     s0 = None
     def restore(label):
         log["last_action"] = label
@@ -126,7 +284,13 @@ def run(server, mode="core", profile=DEFAULT_PROFILE, text=BASELINE, jump=55, ef
         return engine.restore(s0, trace)
 
     try:
-        log["heal"] = heal(controller)
+        if dx9:
+            with controller.frame_gate() as (gate, _):
+                actors = gate["combat"] or {}
+                if not actors.get("enemiesComplete") or not actors.get("enemies"):
+                    raise ValueError("DX9 battle acceptance requires a living enemy in the room")
+        else:
+            log["heal"] = heal(controller)
         s0 = engine.capture()
         log["snapshot"] = {"frame": s0.frame, "ms": s0.milliseconds, "bytes": s0.bytes,
                            "threads": s0.threads, "spans": [asdict(span) for span, _ in s0.blocks]}
@@ -142,7 +306,8 @@ def run(server, mode="core", profile=DEFAULT_PROFILE, text=BASELINE, jump=55, ef
         log["fingerprints"] = {"A": list(map(fingerprint, state_a)), "B": list(map(fingerprint, state_b))}
         delta = first_difference(state_a, state_b)
         log["baseline"] = {"result": "PASS" if log["fingerprints"]["A"] == log["fingerprints"]["B"]
-                           and all(r["combat"]["inputUpdates"] for r in a + b)
+                           and (all(r["reads"] == 1 and r["presents"] == 1 for r in a + b) if dx9
+                                else all(r["combat"]["inputUpdates"] for r in a + b))
                            else "FAIL", "first_difference": delta, "presents": [presents(a), presents(b)]}
         write_log(name, log)
         log["restore_b"] = restore("restore S0 for one-frame jump edit")
@@ -163,11 +328,19 @@ def run(server, mode="core", profile=DEFAULT_PROFILE, text=BASELINE, jump=55, ef
             if not 1 <= count <= 10000:
                 raise ValueError("Effects timeline must contain between 1 and 10000 frames")
             restore("restore S0 for effects run A")
-            ea = events(play(controller, effects, count))
+            effects_a = play(controller, effects, count)
             restore("restore S0 for effects run B")
-            eb = events(play(controller, effects, count))
+            effects_b = play(controller, effects, count)
+            ea, eb = events(effects_a), events(effects_b)
+        if dx9:
+            log["updateCounts"] = {"baselineA": update_counts(a), "baselineB": update_counts(b)}
+            if effects_text:
+                log["updateCounts"].update(effectsA=update_counts(effects_a), effectsB=update_counts(effects_b))
+            if log["updateCounts"]["baselineA"] != log["updateCounts"]["baselineB"]:
+                log["baseline"]["result"] = "FAIL"
         log["effects"] = {"result": "PASS" if ea == eb and ea["enemy_step"]
-                          and (ea["player_hitstop"] or ea["enemy_hitstop"]) else "FAIL",
+                          and (ea["player_hitstop"] or ea["enemy_hitstop"])
+                          and (not dx9 or not effects_text or log["updateCounts"]["effectsA"] == log["updateCounts"]["effectsB"]) else "FAIL",
                           "A": ea, "B": eb}
         if mode == "full":
             span_tests(controller, engine, s0, timeline, log, name)
@@ -181,6 +354,8 @@ def run(server, mode="core", profile=DEFAULT_PROFILE, text=BASELINE, jump=55, ef
                 if s0 is not None:
                     log["reset_to_s0"] = restore("restore S0 for end-of-test parking")
                 controller.load(Timeline())
+                if dx9:
+                    controller.rpc.live(s0 is not None)
         except Exception:
             log["reset_error"] = traceback.format_exc()
         write_log(name, log)
@@ -232,7 +407,7 @@ def stability(controller, engine, s0, timeline, log, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pid", type=int)
-    parser.add_argument("--mode", choices=("inspect", "census", "core", "full"), default="core")
+    parser.add_argument("--mode", choices=("inspect", "census", "core", "full", "menu"), default="core")
     parser.add_argument("--profile", choices=SNAPSHOT_PROFILES, default=DEFAULT_PROFILE)
     parser.add_argument("--timeline", type=Path)
     parser.add_argument("--effects-timeline", type=Path)

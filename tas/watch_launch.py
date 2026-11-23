@@ -1,6 +1,6 @@
 """Start the game with write-watch on its big allocations, so snapshots can ask the system which pages changed.
 
-The engine creates its eight allocator arenas with VirtualAlloc about 266 ms after the process appears.
+The two builds create their allocator arenas with VirtualAlloc during early startup.
 MEM_WRITE_WATCH can only be requested at that moment, so the process is suspended as soon as KernelBase
 is mapped, VirtualAlloc gets a five-byte detour into a small stub, and the process is resumed. The
 engine asks for each arena as VirtualAlloc(NULL, size, MEM_COMMIT, PAGE_READWRITE) (measured
@@ -8,6 +8,9 @@ engine asks for each arena as VirtualAlloc(NULL, size, MEM_COMMIT, PAGE_READWRIT
 MEM_RESERVE | MEM_WRITE_WATCH added, which is the same allocation plus the watch. No file is changed and nothing runs in the game
 except that stub. The detour is removed again once the arenas exist.
 """
+import argparse
+from hashlib import sha256
+from build_profile import profiles
 import ctypes as ct
 import os
 import subprocess
@@ -20,10 +23,9 @@ import pefile
 from keystone import KS_ARCH_X86, KS_MODE_32, Ks
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from pe_image import EXE as EXE_PATH, GAME  # noqa: E402  (found through Steam, or DMC4SE_EXE)
+from pe_image import EXE as EXE_PATH, GAME, find_game  # noqa: E402  (found through Steam, or DMC4SE_EXE)
 KERNELBASE = Path(os.environ["WINDIR"]) / "SysWOW64" / "KernelBase.dll"
 PROLOGUE = bytes.fromhex("8bff558bec")        # mov edi,edi / push ebp / mov ebp,esp
-FIRST_ALLOCATOR_SLOT = 0x1184D64
 MINIMUM = 0x100000                            # only reservations of 1 MiB and more
 LOGGED = 100                                  # large calls recorded for diagnosis
 MEM_RESERVE, MEM_COMMIT, MEM_WRITE_WATCH = 0x2000, 0x1000, 0x200000
@@ -40,6 +42,8 @@ k32.VirtualProtectEx.argtypes = [wt.HANDLE, ct.c_void_p, ct.c_size_t, wt.DWORD, 
 k32.WriteProcessMemory.argtypes = [wt.HANDLE, ct.c_void_p, ct.c_char_p, ct.c_size_t, ct.POINTER(ct.c_size_t)]
 k32.ReadProcessMemory.argtypes = [wt.HANDLE, ct.c_void_p, ct.c_void_p, ct.c_size_t, ct.POINTER(ct.c_size_t)]
 k32.FlushInstructionCache.argtypes = [wt.HANDLE, ct.c_void_p, ct.c_size_t]
+k32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+k32.WaitForSingleObject.restype = wt.DWORD
 psapi.EnumProcessModulesEx.argtypes = [wt.HANDLE, ct.POINTER(ct.c_void_p), wt.DWORD, ct.POINTER(wt.DWORD), wt.DWORD]
 psapi.GetModuleBaseNameW.argtypes = [wt.HANDLE, ct.c_void_p, wt.LPWSTR, wt.DWORD]
 for call in (ntdll.NtSuspendProcess, ntdll.NtResumeProcess):
@@ -56,19 +60,46 @@ class ProcessEntry(ct.Structure):
 k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = [wt.HANDLE, ct.POINTER(ProcessEntry)]
 
 
-def find_pid():
+def find_pid(name=GAME):
     snapshot = k32.CreateToolhelp32Snapshot(2, 0)
     try:
         entry = ProcessEntry()
         entry.size = ct.sizeof(entry)
         found = k32.Process32FirstW(snapshot, ct.byref(entry))
         while found:
-            if entry.name.casefold() == GAME.casefold():
+            if entry.name.casefold() == name.casefold():
                 return entry.pid
             found = k32.Process32NextW(snapshot, ct.byref(entry))
     finally:
         k32.CloseHandle(snapshot)
     return None
+
+
+def find_new_pid(name, old, seconds=25):
+    """The first process called `name` other than `old`, polled every millisecond."""
+    deadline = time.perf_counter() + seconds
+    while time.perf_counter() < deadline:
+        snapshot = k32.CreateToolhelp32Snapshot(2, 0)
+        try:
+            entry = ProcessEntry()
+            entry.size = ct.sizeof(entry)
+            found = k32.Process32FirstW(snapshot, ct.byref(entry))
+            while found:
+                if entry.name.casefold() == name.casefold() and entry.pid != old:
+                    return entry.pid
+                found = k32.Process32NextW(snapshot, ct.byref(entry))
+        finally:
+            k32.CloseHandle(snapshot)
+        time.sleep(.001)
+    return None
+
+
+def exited(handle):
+    return k32.WaitForSingleObject(handle, 0) == 0
+
+
+class Relaunched(Exception):
+    """The process exited during start-up (the Steam wrapper handed the launch over to Steam)."""
 
 
 def read(handle, address, size):
@@ -181,16 +212,36 @@ def remove(handle, patch):
     k32.FlushInstructionCache(handle, patch["target"], 5)
 
 
-def launch(log=print):
+def launch(log=print, game="se", restart=True, exe=None):
     """Kill any running game, start it through Steam and add write-watch to its arenas.
 
     Returns {"pid", "watched": number of allocations that got the flag, "note"}. A failure to patch
     is not fatal: the game still runs and snapshots fall back to reading everything.
     """
-    if find_pid() is not None:
-        subprocess.run(["taskkill", "/F", "/IM", GAME], capture_output=True)
+    profile = next(p for p in profiles() if p["game"] == game)
+    name = profile["process"]
+    exe = Path(exe) if exe else (EXE_PATH if game == "se" else find_game(game))
+    if not exe.is_file():
+        raise RuntimeError(f"找不到游戏程序：{exe}")
+    digest = sha256(exe.read_bytes()).hexdigest()
+    if digest != profile["sha256"]:
+        raise RuntimeError(f"不支持这个版本的游戏程序：{exe}\nSHA-256：{digest}")
+    app_id = str(profile["steamAppId"])
+    layout = profile["snapshot"]
+    first_slot = 0x400000 + layout["firstSlot"]
+    def arena_ready(handle, address):
+        try:
+            descriptor = int.from_bytes(read(handle, address, 4), "little")
+            return (descriptor and int.from_bytes(read(handle, descriptor, 4), "little") == 0x400000 + layout["vt"]
+                    and int.from_bytes(read(handle, descriptor + layout["low"], 4), "little") != 0)
+        except OSError:
+            return False
+    if find_pid(name) is not None:
+        if not restart:
+            raise RuntimeError("游戏已在启动，请再双击一次 start_game.bat 连接它。")
+        subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True)
         deadline = time.monotonic() + 15
-        while find_pid() is not None and time.monotonic() < deadline:
+        while find_pid(name) is not None and time.monotonic() < deadline:
             time.sleep(.1)
         time.sleep(2)   # let Steam register that the old process is gone
     pid = None
@@ -201,32 +252,60 @@ def launch(log=print):
     # id is known at once, so the write-watch patch is never late.
     log("正在启动游戏…")
     try:
-        if not EXE_PATH.is_file():
-            raise OSError("找不到游戏：Steam 里没有找到鬼泣4特别版。请把环境变量 DMC4SE_EXE 设成 "
-                          "DevilMayCry4SpecialEdition.exe 的完整路径后再试")
-        environment = dict(os.environ, SteamAppId="329050", SteamGameId="329050")
+        environment = dict(os.environ, SteamAppId=app_id, SteamGameId=app_id)
         # Fully detached: no inherited console or pipe handles, so closing the window that ran this
         # script (or a caller waiting for its output) never touches the game.
-        process = subprocess.Popen([str(EXE_PATH)], cwd=str(EXE_PATH.parent), env=environment,
+        process = subprocess.Popen([str(exe)], cwd=str(exe.parent), env=environment,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, close_fds=True,
                                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                                    | subprocess.DETACHED_PROCESS | 0x01000000)  # CREATE_BREAKAWAY_FROM_JOB
         pid = process.pid
     except OSError as error:
+        if game == "dx9":
+            raise
         log(f"直接启动失败（{error}），改由 Steam 启动…")
     if pid is None:
         for attempt in range(4):
-            os.startfile("steam://rungameid/329050")
+            os.startfile(f"steam://rungameid/{app_id}")
             started = time.perf_counter()
             while pid is None and time.perf_counter() - started < 25:
-                pid = find_pid()
+                pid = find_pid(name)
                 if pid is None:
                     time.sleep(.001)
             if pid is not None:
                 break
     if pid is None:
         raise TimeoutError("游戏没有启动起来。请看看 Steam 是否弹了提示框。")
+    # The original DX9 build's Steam wrapper can hand a direct start over to Steam: the process we
+    # started runs "steam.exe -applaunch" and exits, and Steam starts the game again under a new id
+    # (seen 2026-11-23 in Steam's console_log.txt). Follow it to the new process and patch that one.
+    relaunches = 0
+    while True:
+        try:
+            result = watch_process(pid, layout, first_slot, arena_ready)
+            break
+        except Relaunched:
+            if relaunches >= 2:
+                result = {"pid": pid, "watched": 0, "note": "write-watch not installed: the game kept restarting"}
+                break
+            relaunches += 1
+            log("游戏被 Steam 重新拉起，正在跟上新的进程…")
+            new_pid = find_new_pid(name, pid)
+            if new_pid is None:
+                raise TimeoutError("游戏被 Steam 重新启动后没有出现新的进程。")
+            pid = new_pid
+    if relaunches:
+        result["note"] = (result["note"] + f"; followed {relaunches} Steam relaunch(es)").lstrip("; ")
+    log(f"游戏已启动（PID {pid}），带写入监视的内存申请 {result['watched']} 次。{result['note']}")
+    return result
+
+
+def watch_process(pid, layout, first_slot, arena_ready):
+    """Install the VirtualAlloc detour in a just-started process and wait for its arenas.
+
+    Raises Relaunched when the process exits before its arenas exist.
+    """
     born = time.perf_counter()
     handle = None
     while not handle and time.perf_counter() - born < 5:
@@ -239,32 +318,34 @@ def launch(log=print):
     patch = None
     try:
         while module_base(handle, "KernelBase.dll") is None:
+            if exited(handle):
+                raise Relaunched()
             if time.perf_counter() - born > 5:
                 raise RuntimeError("KernelBase never appeared in the module list")
             time.sleep(.0005)
         if ntdll.NtSuspendProcess(handle) != 0:
+            if exited(handle):
+                raise Relaunched()
             raise RuntimeError("Could not suspend the new process")
         try:
             at = (time.perf_counter() - born) * 1000
-            try:
-                already = int.from_bytes(read(handle, FIRST_ALLOCATOR_SLOT, 4), "little")
-            except OSError:
-                already = 0
+            already = arena_ready(handle, first_slot)
             patch = install(handle)
             result["note"] = f"patched {at:.0f} ms after the process appeared"
             if already:
-                result["note"] += "; allocator slot was already non-zero before the patch"
+                result["note"] += "; first arena already existed before the patch"
         finally:
             ntdll.NtResumeProcess(handle)
         # Wait for the arenas, then take the detour out again.
         while time.perf_counter() - born < 30:
-            try:
-                if int.from_bytes(read(handle, FIRST_ALLOCATOR_SLOT, 4), "little"):
-                    break
-            except OSError:
-                pass
+            if exited(handle):
+                raise Relaunched()
+            if all(arena_ready(handle, 0x400000 + slot) for slot in layout["slots"]):
+                break
             time.sleep(.002)
         time.sleep(1.0)
+        if exited(handle):
+            raise Relaunched()
         result["watched"] = int.from_bytes(read(handle, patch["counter"], 4), "little")
         count = min(int.from_bytes(read(handle, patch["seen"], 4), "little"), LOGGED)
         rows = read(handle, patch["table"], count * 16)
@@ -276,14 +357,19 @@ def launch(log=print):
             remove(handle, patch)
         finally:
             ntdll.NtResumeProcess(handle)
+    except Relaunched:
+        raise
     except Exception as error:
+        if exited(handle):
+            raise Relaunched() from error
         result["note"] = f"write-watch not installed: {error}"
     finally:
         k32.CloseHandle(handle)
-    log(f"游戏已启动（PID {pid}），带写入监视的内存申请 {result['watched']} 次。{result['note']}")
     return result
 
 
 if __name__ == "__main__":
-    print(launch())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--game", choices=("se", "dx9"), default="se")
+    print(launch(game=parser.parse_args().game))
     sys.exit(0)

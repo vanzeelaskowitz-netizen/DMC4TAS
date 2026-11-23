@@ -136,6 +136,21 @@ class ProcessMemory:
     def u32(self, address):
         return int.from_bytes(self.read(address, 4), "little")
 
+    def default_blocks(self, descriptor):
+        """Match MtDefaultAllocator's 16-byte VirtualAlloc header and both live byte totals."""
+        blocks = []
+        for region in self.regions():
+            if region.kind != MEM_PRIVATE or not region.writable or region.base != region.allocation:
+                continue
+            header = self.read(region.base, 16)
+            size = int.from_bytes(header[12:], "little")
+            if header[:12] == bytes(12) and size and (size + 15 + PAGE) // PAGE * PAGE == region.end - region.base:
+                blocks.append((region.base + 16, size))
+        total = sum(size for _, size in blocks)
+        if total != self.u32(descriptor + 4) or total != self.u32(descriptor + 12):
+            raise RuntimeError("DX9 default allocator ownership could not be reconciled")
+        return blocks
+
     def read_spans(self, ranges, workers=6, chunk=8 << 20):
         """Read many [start, end) ranges at once, in parallel, straight into bytearrays.
 

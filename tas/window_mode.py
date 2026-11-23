@@ -15,10 +15,10 @@ user32.IsWindowVisible.argtypes = (wt.HWND,)
 user32.GetWindowTextLengthW.argtypes = (wt.HWND,)
 
 
-def require_windowed(pid):
-    path = Path(os.environ["LOCALAPPDATA"]) / "CAPCOM/DEVILMAYCRY4SPECIALEDITION/config.ini"
+def require_windowed(pid, config="CAPCOM/DEVILMAYCRY4SPECIALEDITION/config.ini"):
+    path = Path(os.environ["LOCALAPPDATA"]) / config
     if not re.search(rb"(?im)^\s*FullScreen\s*=\s*OFF\s*$", path.read_bytes()):
-        raise RuntimeError("DMC4SE config must have FullScreen=OFF")
+        raise RuntimeError(f"{path} must have FullScreen=OFF")
     found = []
 
     @WINDOW_ENUM

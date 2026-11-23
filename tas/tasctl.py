@@ -1,9 +1,7 @@
 """Console and Python control API for DMC4SE M1."""
 import argparse
 from contextlib import contextmanager
-from hashlib import sha256
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,34 +10,33 @@ import time
 import frida
 
 ROOT = Path(__file__).resolve().parents[1]
-# Where the agent appends the game's access violations. Outside the project on purpose: the agent
-# opens it from inside the game and needs a path without non-ASCII characters.
-CRASH_LOG = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "DMC4TAS" / "exception.log"
+CRASH_LOG = ROOT / "logs" / "game-exception.log"
 (ROOT / "logs").mkdir(exist_ok=True)           # not in the repository: a fresh download has none
 sys.path.insert(0, str(ROOT / "work"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 from dump_memory import export
-from keyboard_probe import EXPECTED_SHA
+from build_profile import identify, profiles
 from keycodes import KEY_CODES
-from pe_image import EXE
 from timeline import validate_mapping
 from window_mode import require_windowed
 
 
-def target_pid(pid=None):
+def target_pid(pid=None, *, game="se"):
+    names = {profile["process"].casefold() for profile in profiles() if game in (None, profile["game"])}
     targets = [item.pid for item in frida.get_local_device().enumerate_processes()
-               if item.name.casefold() == EXE.name.casefold()]
+               if item.name.casefold() in names]
     if pid in targets:
         return pid
     if pid is None and len(targets) == 1:
         return targets[0]
-    raise RuntimeError(f"Select the running DMC4SE PID. Found {targets}")
+    raise RuntimeError(f"Select the running DMC4 PID with --pid. Found {targets}")
 
 
 class Controller:
     def __init__(self, pid=None, *, start_parked=False):
-        self.pid = target_pid(pid)
+        self.pid = target_pid(pid, game=None)
+        self.build = identify(self.pid)
         self.start_parked = start_parked
         self.errors = []
         self.session = None
@@ -48,25 +45,26 @@ class Controller:
     def attach(self):
         if self.session is not None:
             raise RuntimeError("Controller is already attached")
-        if sha256(EXE.read_bytes()).hexdigest() != EXPECTED_SHA:
-            raise RuntimeError("This agent supports Steam build 24329835 only")
+        self.build = identify(self.pid)
+        se = self.build["game"] == "se"
         dump_dir = ROOT / "dump"
         try:
-            metadata = json.loads((dump_dir / "dump.json").read_text(encoding="utf-8"))
+            manifest = "dump.json" if se else "dmc4_dx9.json"
+            metadata = json.loads((dump_dir / manifest).read_text(encoding="utf-8"))
         except FileNotFoundError:
             metadata = {}
-        if (metadata.get("input_sha256") != EXPECTED_SHA
-                or not (dump_dir / "dmc4se_mem.exe").is_file()):
-            export(self.pid)
+        image = "dmc4se_mem.exe" if se else "dmc4_dx9_mem.exe"
+        if metadata.get("input_sha256") != self.build["sha256"] or not (dump_dir / image).is_file():
+            export(self.pid, self.build["game"])
         self.errors.clear()
-        require_windowed(self.pid)
+        require_windowed(self.pid, self.build["config"])
         self.session = frida.attach(self.pid)
         try:
-            source = "\n".join((ROOT / "tas" / name).read_text(encoding="utf-8-sig")
-                               for name in ("combat.js", "scene.js", "agent.js"))
+            scripts = ["combat.js", "scene.js", "agent.js"]
+            source = "const build = " + json.dumps(self.build) + ";\n" + "\n".join(
+                (ROOT / "tas" / name).read_text(encoding="utf-8-sig") for name in scripts)
             if self.start_parked:
                 source = "globalThis.TASStartParked = true;\n" + source
-            CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
             source = f"globalThis.TASCrashLog = {json.dumps(str(CRASH_LOG))};\n" + source
             self.script = self.session.create_script(source)
             self.script.on("message", self._message)
@@ -100,7 +98,7 @@ class Controller:
         raise TimeoutError(f"Timed out waiting for the frame boundary. Last state: {state}")
 
     def pause(self):
-        require_windowed(self.pid)
+        require_windowed(self.pid, self.build["config"])
         self.rpc.pause()
         return self.wait_for(lambda state: state["parked"])
 
@@ -134,8 +132,11 @@ class Controller:
     def step(self, n=1):
         start = self.status()["frame"]
         self.rpc.step(n)
-        self.wait_for(lambda state: state["parked"] and state["frame"] >= start+n,
-                      timeout=max(5, n / 10))
+        state = self.wait_for(lambda state: (state["parked"] and state["frame"] >= start+n)
+                              or (self.build["game"] == "dx9" and state.get("savesLost") and state["mode"] == "observe"), timeout=max(5, n / 10))
+        if not state["parked"]:
+            self.rpc.drain()
+            raise RuntimeError(f"旧快照已清除（{state['savesLost']}）")
         rows = self.rpc.drain()
         if len(rows) != n or [row["number"] for row in rows] != list(range(start+1, start+n+1)):
             raise RuntimeError("Unexpected number or sequence of completed frames")
@@ -196,10 +197,17 @@ def start_service(pid, *, live=False):
 
 
 def run_command(pid, command, argument=""):
-    from client import Client
+    from client import Client, STATE
 
     if command == "start":
         return start_service(pid)
+    if command == "attach":
+        try:
+            return Client(pid).call("attach")
+        except (OSError, RuntimeError):
+            if STATE.exists() or identify(target_pid(pid, game=None))["game"] != "dx9":
+                raise
+        return start_service(pid, live=True)
     client = Client(pid)
     if command == "stop":
         return client.call("shutdown")
@@ -208,7 +216,7 @@ def run_command(pid, command, argument=""):
         return client.call(command, count=count)
     if command == "load":
         return client.call(command, path=str(Path(argument.strip().strip('"')).resolve()))
-    if command in {"attach", "pause", "save", "status", "detach"}:
+    if command in {"pause", "save", "status", "detach"}:
         return client.call(command)
     raise ValueError(f"Unknown command {command!r}")
 

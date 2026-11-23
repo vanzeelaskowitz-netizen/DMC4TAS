@@ -53,17 +53,36 @@ class Service(socketserver.TCPServer):
         self.ctl = ctl
         self.token = secrets.token_hex(24)
         self.stopped = False
+        self.m1_origin = None
 
     def dispatch(self, command, arguments):
+        if self.ctl.build["game"] == "dx9" and command not in {
+            "attach", "detach", "pause", "step", "status", "load", "resume", "live", "shutdown",
+            "save", "back", "goto", "configure", "accept", "trace", "cheat", "m1-load", "m1-step", "m1-resume", "m1-pause", "m1-fallback-test", "record-scene",
+            "take-start", "take-stop", "unpause", "state-save", "state-load", "state-list", "state-delete",
+        }:
+            raise RuntimeError("原版 DX9 不支持这项命令。")
+        if (self.ctl.build["game"] == "dx9" and self.ctl.session
+                and (getattr(self, "route", None) or command in ("back", "goto"))):
+            state = self.ctl.rpc.status()
+            if state["savesLost"] and not state["snapshotsAlive"]:
+                self.route = None
+                if command in ("back", "goto"):
+                    raise RuntimeError(f"旧快照已清除（{state['savesLost']}）")
         if command == "status":
             if self.ctl.session is None:
                 return {"mode": "detached", "parked": False, "gamePid": self.ctl.pid}
             result = self.ctl.status() | {"gamePid": self.ctl.pid, "servicePid": os.getpid()}
+            if self.m1_origin is not None:
+                result.update(timelineFrame=result["frame"] - self.m1_origin, timelineOrigin=self.m1_origin)
             route = getattr(self, "route", None)
+            result["soundRouteReady"] = route is None or bool(getattr(route, "sound_guarded", False))
+            result["playerProtocol"] = 10
             if route and route.origin is not None:
                 result.update(timelineFrame=result["frame"] - route.origin, timelineOrigin=route.origin,
                               snapshots=[item.frame - route.origin for item, _ in route.checkpoints],
                               timelinePath=route.path)
+            result["saves"] = list(getattr(self, "saves", None) or ())
             return result
         if command == "heal":
             if getattr(self, "recording", False):
@@ -80,10 +99,11 @@ class Service(socketserver.TCPServer):
             import timeline
             importlib.reload(timeline)
             rollback.read_script, rollback.Timeline = timeline.read_script, timeline.Timeline
-            if "take" in sys.modules:
-                importlib.reload(sys.modules["take"])
+            for name in ("take", "savestate"):
+                if name in sys.modules:
+                    importlib.reload(sys.modules[name])
             importlib.reload(service_operations)
-            return {"reloaded": ["timeline", "take", "service_operations"]}
+            return {"reloaded": ["timeline", "take", "savestate", "service_operations"]}
         if command == "shutdown":
             # After the first snapshot restore the game's sound threads are kept asleep for good:
             # their state no longer matches the restored memory. Removing the hooks wakes them and
@@ -124,6 +144,9 @@ def main():
 
 def serve(pid, *, live=False):
     controller = Controller(pid, start_parked=not live)
+    if controller.build["game"] == "dx9":
+        live = True
+        controller.start_parked = False
     with Service(controller) as server, controller:
         state = controller.status() if live else controller.pause()
         print(json.dumps({"initial_frame": state["frame"], "parked": state["parked"],
