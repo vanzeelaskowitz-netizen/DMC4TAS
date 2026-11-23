@@ -22,6 +22,12 @@
     "clock": "0xd8d45c",
     "gameMode": "0xd84c78"
   },
+  "damageSample": {"playerHp": "0x1b00", "hp": "0x30", "enemyList": "0x194"},
+  "camera": {"slot": "0xd8d474", "view": 192, "projection": 256},
+  "controls": {
+    "save": "0xd64b48", "character": "0x19ac", "tables": [456, 696, 948, 1212, 1460],
+    "slots": {"bringer": 88, "sword": 72, "jump": 80, "lock": 84, "up": 128, "down": 132, "left": 136, "right": 140}
+  },
   "sites": {
     "frame": "0x5d1a70",
     "focus": "0x6b2160",

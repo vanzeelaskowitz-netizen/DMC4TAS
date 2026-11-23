@@ -15,9 +15,12 @@ Addresses are for Steam build 24329835 (see docs/MAP.md): enemy list [0x118D450]
 matrix at +0xC0 and the projection at +0x100 (row vectors, found 2026-11-20).
 """
 import ctypes
+from ctypes import wintypes
 import struct
 import tkinter as tk
-from ctypes import wintypes
+
+from build_profile import profiles
+from camera import project
 
 KEY = "#010203"                  # the colour that is made transparent
 FREE, INSIDE, BLOCKED = "#35e06a", "#ff4040", "#ffd23a"   # yellow: in reach, but no step allowed now
@@ -29,6 +32,7 @@ user32.GetWindowLongW.restype = ctypes.c_long
 
 class Overlay:
     def __init__(self, root):
+        self.camera = next(p["camera"] for p in profiles() if p["game"] == "se")
         self.root = root
         self.window = tk.Toplevel(root)
         self.window.overrideredirect(True)
@@ -158,21 +162,18 @@ class Overlay:
         self.window.geometry(f"{width}x{height}+{corner.x}+{corner.y}")
         self.window.deiconify()
         self.window.attributes("-topmost", True)
-        camera = self.u32(0x118D474)
-        view = self.floats(camera + 0xC0, 16) if camera else None
-        projection = self.floats(camera + 0x100, 16) if camera else None
+        camera = self.u32(0x400000 + self.camera["slot"])
+        view = self.floats(camera + self.camera["view"], 16) if camera else None
+        projection = self.floats(camera + self.camera["projection"], 16) if camera else None
         self.canvas.delete("all")
         self.count = 0
         if not view or not projection:
             return
         for centre, radius, colour in self.spheres():
-            x, y, z = (centre[0] * view[k] + centre[1] * view[4 + k] + centre[2] * view[8 + k] + view[12 + k]
-                       for k in range(3))
-            depth = -z                       # the camera looks down its negative z axis
-            if depth < 1:
+            point = project(centre, view, projection)
+            if point is None:
                 continue
-            px = (x * projection[0] / depth * 0.5 + 0.5) * width
-            py = (0.5 - y * projection[5] / depth * 0.5) * height
+            px, py, depth = point["x"] * width, point["y"] * height, point["depth"]
             # A small square on the JC point itself (the centre of the step sphere), not the whole
             # reach of the sphere: the user asked for the point. A little larger when close.
             half_x = half_y = min(22, max(9, 14 * 600 / depth))

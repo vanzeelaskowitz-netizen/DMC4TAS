@@ -56,6 +56,8 @@ class Service(socketserver.TCPServer):
         self.m1_origin = None
 
     def dispatch(self, command, arguments):
+        if command == "timeline-keys":
+            return service_operations.timeline_keys(getattr(self, "route", None), **arguments)
         if self.ctl.build["game"] == "dx9" and command not in {
             "attach", "detach", "pause", "step", "status", "load", "resume", "live", "shutdown",
             "save", "back", "goto", "configure", "accept", "trace", "cheat", "m1-load", "m1-step", "m1-resume", "m1-pause", "m1-fallback-test", "record-scene",
@@ -84,6 +86,9 @@ class Service(socketserver.TCPServer):
                               timelinePath=route.path)
             result["saves"] = list(getattr(self, "saves", None) or ())
             return result
+        if command == "motions":
+            path = ROOT / "tas" / "builds" / "motions" / (self.ctl.build["id"] + ".json")
+            return json.loads(path.read_text(encoding="utf-8"))
         if command == "heal":
             if getattr(self, "recording", False):
                 raise RuntimeError("End the recording before healing")

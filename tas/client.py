@@ -42,7 +42,7 @@ class Client:
     def call(self, command, **arguments):
         request = {"token": self.info["token"], "command": command, "args": arguments}
         with socket.create_connection(("127.0.0.1", self.info["port"]), timeout=3) as conn:
-            conn.settimeout(600 if command == "accept" else 120)
+            conn.settimeout(600 if command in ("probe", "accept") else 120)
             conn.sendall(json.dumps(request).encode("utf-8") + b"\n")
             with conn.makefile("rb") as response:
                 line = response.readline()

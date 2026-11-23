@@ -6,7 +6,8 @@ const combat = (() => {
     const root = va => safe(() => at(va).readPointer());
     // The predicate and its mask helper only read actor data. Never call the
     // successful action dispatcher. "none" excludes our own observation hooks.
-    const dx9 = typeof build !== 'undefined' && build.game === 'dx9';
+    const hasBuild = typeof build !== 'undefined';
+    const dx9 = hasBuild && build.game === 'dx9';
     const predicate = dx9 ? null : new NativeFunction(at(0x5eeef0),'uint8',['pointer'],
         {abi:'thiscall', traps:'none', scheduling:'exclusive'});
     const field = (p, off, method) => safe(() => p.add(off)[method]());
@@ -44,8 +45,40 @@ const combat = (() => {
         return {held:u32(p,off), pressed:u32(p,off+4), released:u32(p,off+8)};
     }
     let active = null;
+    function damageOffset(e, t) {
+        const offsets = damageOffsets.filter(off => off+0x34 < t.size && pointer(e,off)?.equals(at(0xf2d184)));
+        return offsets.length === 1 ? offsets[0] : null;
+    }
+    function startingHp() {
+        const hp = {}, cfg = build.damageSample;
+        const p = pointer(pointer(module.base,build.roots.mediator),build.scene.player);
+        if (id(p)) hp[id(p)] = f32(p,cfg.playerHp);
+        const head = pointer(pointer(module.base,build.roots.unit),cfg.enemyList);
+        const seen = new Set();
+        for (let e = head; id(e) && !seen.has(id(e)); e = pointer(e,build.scene.next)) {
+            seen.add(id(e));
+            const t = type(e);
+            const off = t?.names.includes('uEnemy') ? damageOffset(e,t) : null;
+            if (off !== null) hp[id(e)] = f32(e,off+cfg.hp);
+        }
+        return hp;
+    }
+    function controls(p, names) {
+        const cfg = build.controls, save = pointer(module.base, cfg.save);
+        const character = u32(p, cfg.character);
+        const offset = cfg.tables[character];
+        if (!id(save) || offset === undefined) return null;
+        const table = save.add(offset);
+        return Object.fromEntries(Object.entries(cfg.slots).map(([name, offset]) =>
+            [name, names.get(u32(table, offset)) ?? null]));
+    }
+    function cameraMatrices() {
+        const cfg = build.camera, camera = pointer(module.base,cfg.slot);
+        const view = vec(camera,cfg.view,16), projection = vec(camera,cfg.projection,16);
+        return view && projection ? {view, projection} : null;
+    }
     function begin(tid) {
-        active = {tid, checks:[], attempts:[], events:[], inputs:[], masks:new Map()};
+        active = {hp:tid && hasBuild ? startingHp() : {}, tid, checks:[], attempts:[], events:[], inputs:[], masks:new Map()};
     }
     function install(hook) {
         hook(at(0x8c1490), {
@@ -144,12 +177,12 @@ const combat = (() => {
         const key = id(e), xyz = vec(e,0x40);
         const spheres = geometry(e,pos,phase.masks.get(key));
         const checks = phase.checks.filter(item => item.actor === key);
-        const damage = damageOffsets.filter(off => off+0x34 < t.size && pointer(e,off)?.equals(at(0xf2d184)));
+        const damage = damageOffset(e,t);
         const table = pointer(e,0x1818);
         const readable = field(e,0x1820,'readU8') === 0 || (table && table.isNull()) ||
             (spheres && spheres.every(s => s.center !== null && s.radius !== null));
         const canStep = pos && readable ? safe(() => !!predicate(e)) : null;
-        return {pointer:key, type:t.names[0], position:xyz, hp:damage.length===1 ? f32(e,damage[0]+0x30) : null,
+        return {pointer:key, type:t.names[0], position:xyz, hp:damage !== null ? f32(e,damage+0x30) : null,
             action:field(e,4,'readU8'), phase:field(e,5,'readU8'),
             motion:field(e,0x4e4,'readU16'), motionFrame:f32(e,0x530),
             distance:pos && xyz ? Math.hypot(...xyz.map((v,i)=>v-pos[i])) : null,
@@ -197,7 +230,8 @@ const combat = (() => {
         }
         const engineDelta = f32(root(0x118d460),0x70);
         const timeMultiplier = engineDelta > 0 && player?.deltaUnits != null ? player.deltaUnits / engineDelta : null;
-        return {player, inputUpdates:phase.inputs, enemies:complete || enemies.length ? enemies : null,
+        return {...(hasBuild && {matrices:cameraMatrices(), hpBefore:phase.hp}),
+            player, inputUpdates:phase.inputs, enemies:complete || enemies.length ? enemies : null,
             enemiesComplete:complete, checks:phase.checks, attempts:phase.attempts, enemyStep:phase.events.length>0, events:phase.events,
             stepCheck:phase.early || phase.moveEarly || null, stepCheckAtMove:phase.moveEarly || null,
             turbo:field(mediator,0x5ec,'readU8'), turboCancel:field(mediator,0x5ed,'readU8'),
@@ -324,11 +358,11 @@ const combat = (() => {
                 const t = type(e);
                 if (t?.names.includes('uEnemy')) {
                     killSeen++;
-                    const damage = damageOffsets.filter(off => off+0x34 < t.size && pointer(e,off)?.equals(at(0xf2d184)));
-                    if (damage.length === 1) {
+                    const damage = damageOffset(e,t);
+                    if (damage !== null) {
                         killCovered++;
-                        const where = e.add(damage[0]+0x30);
-                        const hp = f32(e,damage[0]+0x30), hpMax = f32(e,damage[0]+0x34);
+                        const where = e.add(damage+0x30);
+                        const hp = f32(e,damage+0x30), hpMax = f32(e,damage+0x34);
                         if (cheats.kill) {
                             if (hp > 1) safe(() => where.writeFloat(1));
                         } else if (hp > 0 && hpMax > 0 && hp < hpMax) {
@@ -347,6 +381,6 @@ const combat = (() => {
         return cheatStatus();
     }
     const cheatStatus = () => ({...cheats, enemies:killSeen, enemiesCovered:killCovered, skipped:[...skipped]});
-    return {install, begin, inspect, finish:() => safe(finish), type,
+    return {install, begin, inspect, controls, finish:() => safe(finish), type,
             cheat:() => safe(dx9 ? dxPractice : cheat), setCheat, cheatStatus, cheatRestored() { timeHeld = null; }};
 })();

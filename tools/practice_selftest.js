@@ -5,8 +5,11 @@ const path = require('node:path');
 const vm = require('node:vm');
 const tas = path.join(__dirname, '..', 'tas');
 const source = fs.readFileSync(path.join(tas, 'combat.js'), 'utf8');
-const profile = JSON.parse(fs.readFileSync(path.join(tas, 'builds/dx9_21360.json'), 'utf8'),
-    (_, v) => typeof v === 'string' && /^0x/.test(v) ? Number(v) : v);
+function buildProfile(id) {
+    return JSON.parse(fs.readFileSync(path.join(tas, 'builds', id + '.json'), 'utf8'),
+        (_, v) => typeof v === 'string' && /^0x/.test(v) ? Number(v) : v);
+}
+const profile = buildProfile('dx9_21360');
 const memory = new Map(), writes = [];
 class Pointer {
     constructor(n) { this.n = n; }
@@ -83,7 +86,7 @@ memory.set(enemy+0x1500, 0); memory.set(mediator+0x24, 0); dx.cheat();
 assert.equal(memory.get(enemy+0x1544), 100); assert.equal(dx.cheatStatus().enemies, 0);
 memory.set(mediator+0x24, player); typed(mediator, 'sUnit');
 memory.set(player+0x15cc, 10); dx.cheat(); assert.equal(memory.get(player+0x15cc), 10);
-const se = load({game:'se'});
+const se = load(buildProfile('se_24329835'));
 memory.set(0x1154b34, mediator); memory.set(mediator+0x24, player);
 typed(mediator, 'sMediator'); memory.set(0x118d450, unit); memory.set(enemy+0x14, 0);
 memory.set(enemy+0x1a50, 0xf2d184); memory.set(enemy+0x1a80, 20); memory.set(enemy+0x1a84, 60);
@@ -95,3 +98,20 @@ assert.equal(memory.get(player+0x1b00), 80); assert.equal(memory.get(player+0x25
 assert.equal(memory.get(enemy+0x1a80), 1); assert.equal(se.cheatStatus().enemiesCovered, 1);
 memory.set(mediator+0x384, 299); se.cheat(); assert.equal(memory.get(mediator+0x384), 300);
 console.log('PASS DX9 guards, coverage, vitals, timers, restore and all four SE aids');
+se.setCheat('kill', false);
+for (const loss of [7, 9, 0]) {
+    se.cheat();
+    se.begin(1);
+    memory.set(enemy+0x1a80, 60-loss);
+    const sample = se.finish();
+    assert.equal(sample.hpBefore[enemy], 60);
+    assert.equal(sample.enemies[0].hp, 60-loss);
+}
+console.log('PASS consecutive enemy hits with HP lock: 60->53, 60->51, 60->60');
+const controls = buildProfile('se_24329835').controls;
+memory.set(base + controls.save, game);
+memory.set(player + controls.character, controls.tables.length);
+assert.equal(se.controls(new Pointer(player), new Map()), null);
+memory.set(player + controls.character, 0);
+memory.set(game + controls.tables[0] + controls.slots.jump, 75);
+assert.equal(se.controls(new Pointer(player), new Map([[75, 'K']])).jump, 'K');

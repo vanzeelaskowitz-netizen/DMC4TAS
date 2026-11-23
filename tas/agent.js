@@ -494,7 +494,7 @@ function releaseFrame(invocation) {
     invocation.tasFrame = current;
 }
 
-function decode() {
+function decode(player) {
     const instance = keyboard();
     const binding = new Uint8Array(instance.add(build.fields.keyMap).readByteArray(256));
     const bytes = new Uint8Array(instance.add(build.fields.keyBits).readByteArray(128));
@@ -513,6 +513,7 @@ function decode() {
         fields[label] = keys.sort();
         fields[label + 'Bits'] = Array.from(mask, b => b.toString(16).padStart(2, '0')).join('');
     }
+    if (se && player) fields.controls = combat.controls(ptr(player.pointer), names);
     return fields;
 }
 
@@ -718,7 +719,7 @@ try {
                 const { input, scene, ...row } = this.tasFrame;
                 row.combat = se ? combat.finish() : dxBattle(row);
                 if (!se) row.scene = sceneState.sample();
-                row.keys = decode();
+                row.keys = decode(row.combat?.player);
                 row.qpcTicks = clockObject.add(build.clock.previous).readS64().toNumber();
                 row.deltaUnits = clockObject.add(build.clock.units).readFloat();
                 row.gameActive = main().add(build.fields.active).readU8();

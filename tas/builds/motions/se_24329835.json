@@ -1,0 +1,7 @@
+{
+  "nero": {
+    "action": {"stand": 1, "jumpStart": 3, "jumpRise": 6, "airHike": 8, "enemyStep": 25},
+    "motion": {"enemyStep": [17], "snatch": [256], "airSlash": [783], "split": [786], "calibur": [852, 853]}
+  },
+  "scarecrow": {"motion": {"hit": [61, 58, 53]}}
+}

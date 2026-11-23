@@ -9,6 +9,8 @@ import time
 
 import frida
 
+from frame_data import enrich
+
 ROOT = Path(__file__).resolve().parents[1]
 CRASH_LOG = ROOT / "logs" / "game-exception.log"
 (ROOT / "logs").mkdir(exist_ok=True)           # not in the repository: a fresh download has none
@@ -85,6 +87,7 @@ class Controller:
         state = self.rpc.status()
         if state["failure"] or self.errors:
             raise RuntimeError(state["failure"] or self.errors[-1])
+        enrich(state.get("last"))
         return state
 
     def wait_for(self, predicate, timeout=5, *, cleanup=False):
@@ -140,6 +143,8 @@ class Controller:
         rows = self.rpc.drain()
         if len(rows) != n or [row["number"] for row in rows] != list(range(start+1, start+n+1)):
             raise RuntimeError("Unexpected number or sequence of completed frames")
+        for row in rows:
+            enrich(row)
         return rows
 
     def resume(self, until=None):

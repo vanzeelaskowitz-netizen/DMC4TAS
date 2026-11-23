@@ -1,9 +1,10 @@
 """Commands executed serially by the DMC4SE TAS service."""
+from itertools import islice
 import time
 import traceback
 
 from rollback import Rollback
-from timeline import Timeline, parse_script, read_script
+from timeline import Timeline, frames, parse_script, read_script
 
 
 TRACE_LIMIT = 200000
@@ -179,7 +180,6 @@ def new_route(server, sticky=False):
 def first_change(old, new):
     """First timeline frame on which two scripts hold different keys (frames past a script's end
     hold nothing), or None when they are the same."""
-    from timeline import frames
     def held(timeline):
         return [keys for _, keys, _, _ in frames([(a, b, sorted(k)) for a, b, k in timeline.rows])]
     a, b = held(old), held(new)
@@ -230,6 +230,16 @@ def service(server):
         except Exception:
             route.running = False
             traceback.print_exc()
+
+
+def timeline_keys(route, first, last):
+    if route is None or route.origin is None:
+        raise ValueError("No loaded timeline")
+    if type(first) is not int or type(last) is not int or not 0 <= first <= last:
+        raise ValueError("Expected 0 <= first <= last")
+    selected = islice(frames(route.timeline.rows), max(first - 1, 0), last)
+    keys = ([[]] if first == 0 else []) + [sorted(held) for _, held, _, _ in selected]
+    return keys + [[]] * (last - first + 1 - len(keys))     # past the script's last row nothing is pressed
 
 
 def dispatch(server, command, args):
@@ -286,6 +296,9 @@ def dispatch(server, command, args):
             return state
 
     install_trace(server)
+    if command == "probe":
+        from probe import run
+        return run(server, **args)
     if command == "trace":
         return trace(server, args)
     if command == "sound-detail":

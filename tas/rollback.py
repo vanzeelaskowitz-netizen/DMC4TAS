@@ -766,6 +766,26 @@ class Rollback:
         self.path = path
         return {"frames": timeline.rows[-1][1] if timeline.rows else 0}
 
+    def _checkpoint_at(self, target, timeline):
+        candidates = [item for item, prefix in self.checkpoints
+                      if item.frame <= target and prefix == input_prefix(timeline, item.frame - self.origin)]
+        if not candidates:
+            raise RuntimeError("No retained snapshot with a matching input prefix at or before target")
+        return max(candidates, key=lambda item: item.frame)
+
+    def seek_without_saving(self, target):
+        """Seek on the loaded timeline at a parked gate, leaving route metadata untouched."""
+        current = self.controller.status()["frame"]
+        if target < current:
+            snapshot = self._checkpoint_at(target, self.timeline)
+            self.engine.restore(snapshot)
+            current = snapshot.frame
+        self.controller.load(self.timeline, current - self.origin)
+        while current < target:
+            count = min(target - current, DEFAULT_INTERVAL)
+            self.controller.step(count)
+            current += count
+
     def _goto(self, target, timeline):
         if self.origin is None:
             raise RuntimeError("Save a snapshot or load a timeline before navigating")
@@ -775,11 +795,7 @@ class Rollback:
         restored = None
         position = current - self.origin
         if target < current or input_prefix(self.timeline, position) != input_prefix(timeline, position):
-            candidates = [item for item, prefix in self.checkpoints
-                          if item.frame <= target and prefix == input_prefix(timeline, item.frame - self.origin)]
-            if not candidates:
-                raise RuntimeError("No retained snapshot with a matching input prefix at or before target")
-            snapshot = max(candidates, key=lambda item: item.frame)
+            snapshot = self._checkpoint_at(target, timeline)
             restored = self.engine.restore(snapshot)
             current = snapshot.frame
         self.controller.load(timeline, current - self.origin)
