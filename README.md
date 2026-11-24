@@ -1,9 +1,14 @@
 # DMC4TAS
 
-Frame-by-frame TAS (tool-assisted speedrun / showcase) tool for **Devil May Cry 4 Special Edition** on PC
-(Steam, 32-bit, build 24329835). Single-player only.
+Frame-by-frame TAS (tool-assisted speedrun / showcase) tool for **Devil May Cry 4** on PC (Steam, 32-bit).
+Single-player only. Two builds are supported, picked automatically from the game's executable:
 
-鬼泣4特别版（PC Steam 版）的逐帧 TAS 工具。
+| Build | Steam app | Executable | Build ID |
+|---|---|---|---|
+| Special Edition | 329050 | `DevilMayCry4SpecialEdition.exe` | 24329835 |
+| Original (DX9) | 45700 | `DevilMayCry4_DX9.exe` | 21360 |
+
+鬼泣4（PC Steam 版）的逐帧 TAS 工具，支持特别版和原版（DX9）。
 
 Developed by vanzeelaskowitz-netizen together with Claude (Anthropic's AI assistant).
 本工具由 vanzeelaskowitz-netizen 与 Anthropic 的 AI 助手 Claude 一起开发。
@@ -16,12 +21,18 @@ Developed by vanzeelaskowitz-netizen together with Claude (Anthropic's AI assist
 - State display: animation and frame within it, Enemy Step (jump cancel) points drawn over the game,
   Nero's Exceed (red blade) MAX-Act and EX-Act frames.
 - Practice aids: lock HP (player and enemies), infinite Devil Trigger, timer freeze, one-hit kill.
-- Playback with the game's sound effects (background music stays silent during playback).
+- Playback with the game's sound effects. On the original build the game window must be in front
+  (DirectSound mutes background programs); the player brings it forward.
+- Named save states, and a batch `probe` command for tools that search inputs. The MCP server in
+  [DMC4TAS-MCP](https://github.com/vanzeelaskowitz-netizen/DMC4TAS-MCP) lets an AI use them.
+
+On the original build, do not minimise the game window while a timeline is open: the D3D9 device is lost
+and the tool drops its snapshots to stay safe. 原版使用时不要最小化游戏窗口，否则快照会被清掉。
 
 ## Requirements
 
 - Windows 10/11, the game in windowed mode.
-- The Steam version of the game, with Steam running.
+- One of the two Steam builds above, with Steam running.
 - Python 3.13 (64-bit). Run `setup.bat` once: it creates `.venv` and installs `requirements.txt`.
 - The game is found through Steam. If it is not (for example it was copied to another folder),
   `start_game.bat` asks for the executable and remembers it (`game_path.txt` / `game_path_dx9.txt`).
@@ -40,7 +51,7 @@ Developed by vanzeelaskowitz-netizen together with Claude (Anthropic's AI assist
 
 Full guide (Chinese): [docs/USAGE.md](docs/USAGE.md) · 使用说明见 [docs/USAGE.md](docs/USAGE.md)
 
-Script format: see `docs/SCRIPT.md`. Memory map of the build: `docs/MAP.md`.
+Script format: see `docs/SCRIPT.md`. Memory maps: `docs/MAP.md` (Special Edition), `docs/MAP_DX9.md` (original).
 
 ### Decompiled functions / 反编译函数
 
@@ -57,7 +68,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\decompile.ps1 -GhidraD
 
 第一次会导入并分析整个程序，要十几到几十分钟；之后几秒钟就能重新导出。
 
-`runs/` holds a few example scripts. `tools/` holds the probes and tests used while developing; they are
+`runs/` holds a few example scripts (`runs/dx9-exceed-demo.tas`: 11 Exceed-keeping jump cancels on the original build). `tools/` holds the probes and tests used while developing; they are
 not needed to use the tool.
 
 ## Notes
