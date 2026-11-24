@@ -61,7 +61,7 @@ class Service(socketserver.TCPServer):
         if self.ctl.build["game"] == "dx9" and command not in {
             "attach", "detach", "pause", "step", "status", "load", "resume", "live", "shutdown",
             "save", "back", "goto", "configure", "accept", "trace", "cheat", "m1-load", "m1-step", "m1-resume", "m1-pause", "m1-fallback-test", "record-scene",
-            "take-start", "take-stop", "unpause", "state-save", "state-load", "state-list", "state-delete",
+            "probe", "motions", "play-sound", "play-sound-stop", "take-start", "take-stop", "unpause", "state-save", "state-load", "state-list", "state-delete",
         }:
             raise RuntimeError("原版 DX9 不支持这项命令。")
         if (self.ctl.build["game"] == "dx9" and self.ctl.session

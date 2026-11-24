@@ -34,7 +34,8 @@ def summary(row):
 
 def run_passive(args):
     pid = target_pid()
-    if identify(pid)["game"] != "se":
+    build = identify(pid)
+    if build["game"] != "se":
         raise RuntimeError("当前程序只支持 Steam Build 24329835")
     log = ROOT / "logs" / f'combat-{datetime.now():%Y%m%d-%H%M%S-%f}.jsonl'
     mailbox = Queue()
@@ -57,8 +58,9 @@ def run_passive(args):
     session = frida.attach(pid)
     try:
         session.on("detached", lambda *info: mailbox.put({"type":"detached", "info":str(info)}))
-        source = "\n".join((ROOT / "tas" / name).read_text(encoding="utf-8-sig")
-                           for name in ("combat.js", "combat_watch.js"))
+        sources = [(ROOT / "tas" / name).read_text(encoding="utf-8-sig")
+                   for name in ("combat.js", "combat_watch.js")]
+        source = "\n".join([f"const build = {json.dumps(build)};", *sources])
         script = session.create_script(source)
         script.on("message", lambda message, _: mailbox.put(message))
         with log.open("x", encoding="utf-8") as stream:

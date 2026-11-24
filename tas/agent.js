@@ -70,6 +70,7 @@ let savesKept = false;          // named save states exist (see gpuKept)
 let savesScene = null;
 let savesLost = null;           // why they were dropped, for the service to report
 let soundTicks = 0;             // times a sound thread body has run; equal ticks = no sound in between
+let soundWorkers = 0;           // DX9: sound thread bodies that can be put to sleep
 let readCount = 0;
 let testFallback = false;
 let presentCount = 0;
@@ -525,7 +526,7 @@ function decode(player) {
         fields[label] = keys.sort();
         fields[label + 'Bits'] = Array.from(mask, b => b.toString(16).padStart(2, '0')).join('');
     }
-    if (se && player) fields.controls = combat.controls(ptr(player.pointer), names);
+    if (player) fields.controls = combat.controls(ptr(player.pointer), names);
     return fields;
 }
 
@@ -565,7 +566,7 @@ try {
     // A lost host leaves the IAT callbacks alive until the game reaches cleanup.
     Script.pin();
     pinned = true;
-    if (se) combat.install(attach);
+    combat.install(attach);
     attach(address(build.sites.focus), { onEnter(args) {
         // Also while recording gameplay: otherwise switching to another window makes the game open
         // its own pause screen (uGUI_Pause), and every later replay or snapshot starts paused.
@@ -715,7 +716,7 @@ try {
                     render.writeU8(0);
                 }
                 if (!stopped) combat.cheat();       // practice aids, once per frame before it runs
-                if (se && this.tasFrame) combat.begin(this.threadId);
+                if (this.tasFrame) combat.begin(this.threadId);
             } catch (err) {
                 failure = String(err);
                 mode = 'shutdown';
@@ -1412,6 +1413,7 @@ if (!se) {
             run(obj);
         }, 'void', ['pointer'], 'stdcall'));
         soundReplaced.push(site);
+        soundWorkers++;
     }
     // Under the renderer lock, keep a final release on the engine's sweep list.
     // The normal decrement still runs. The use bit postpones the destructor.
@@ -1467,10 +1469,10 @@ function invalidateDevice(reason) {
         leaveForScene(reason);
     }
 }
-function dxBattle(row = {}) {
+function dxBattle(row) {
     const field = build.battle;
     const p = address(build.roots.mediator).readPointer().add(build.scene.player).readPointer();
-    if (p.isNull()) return null;
+    if (p.isNull() && !row) return null;
     const actor = (obj, player) => ({
         pointer: obj.toString(), position: [0,4,8].map(o => obj.add(field.position + o).readFloat()),
         action: player ? obj.add(field.action).readS32() : obj.add(field.enemyAction).readU8(),
@@ -1479,26 +1481,30 @@ function dxBattle(row = {}) {
         hitStopTimer: obj.add(player ? field.playerStop : field.enemyStop).readFloat(),
         frozen: obj.add(player ? field.playerFrozen : field.enemyFrozen).readU8()
     });
-    const player = actor(p, true);
-    player.hp = p.add(field.playerHp).readFloat();
-    player.stepCooldown = p.add(field.cooldown).readFloat();
-    player.input = [0, 4, 8].map(o => p.add(field.buttons + o).readU32());
+    const player = p.isNull() ? null : actor(p, true);
+    if (player) {
+        player.hp = p.add(field.playerHp).readFloat();
+        player.stepCooldown = p.add(field.cooldown).readFloat();
+        player.input = [0, 4, 8].map(o => p.add(field.buttons + o).readU32());
+    }
     const enemies = [], seen = new Set();
     let e = address(build.roots.unit).readPointer().add(field.enemyLine).readPointer();
     while (!e.isNull() && !seen.has(e.toString()) && seen.size < 256) {
         seen.add(e.toString());
-        const types = sceneState.classes(e);
-        if (types.includes('uEnemy')) {
+        const type = combat.type(e);
+        if (type?.names.includes('uEnemy')) {
             const item = actor(e, false);
-            item.type = types[0];
-            item.distance = Math.hypot(...item.position.map((v, i) => v - player.position[i]));
-            item.hp = types.includes('uEm000') ? e.add(field.scarecrowHp).readFloat() : null;
+            item.type = type.names[0];
+            item.distance = player ? Math.hypot(...item.position.map((v, i) => v - player.position[i])) : null;
+            const damage = combat.damageOffset(e,type);
+            item.hp = damage === null ? null : e.add(damage + field.damageHp).readFloat();
+            if (row) Object.assign(item,combat.dxEnemy(e,player?.position));
             enemies.push(item);
         }
         e = e.add(build.scene.next).readPointer();
     }
-    return {player, enemies, enemiesComplete:e.isNull(), inputUpdates:row.playerUpdates || [],
-            enemyStep:!!row.enemyStep, rng:Checksum.compute('sha256', address(layout.rng).readByteArray(layout.rngSize))};
+    return {player, enemies, enemiesComplete:e.isNull(), ...(row && combat.dxFrame(p)), inputUpdates:row?.playerUpdates || [],
+            enemyStep:!!row?.enemyStep, rng:Checksum.compute('sha256', address(layout.rng).readByteArray(layout.rngSize))};
 }
 const soundSettled = () => se ? Object.values(soundIdle).some(count => count >= 3)
     : soundIdle.soundUpdate > 0 && soundIdle.soundLoad > 0;
@@ -1566,6 +1572,10 @@ function status() {
     return { build: build.id, game: build.game, rollback: build.rollback, clockCallers: se ? undefined : clockCallers,
              cheats: combat.cheatStatus(), sceneBlocked, parkRefused, watchAvailable, snapshotsAlive, soundSticky, scenesLeft,
              savesKept, savesLost, soundTicks, sceneEpoch, keptResources, releaseCalls, finalReleases, releaseFaults, lastReleaseFault, pooledKept, sweepsSkipped, keptNames, guardPooled, filterCalls, filterEvents, audible, guardVoices,
+             // Whether the sound can wake at a timeline's first frame. SE: the XAudio2 voice guard.
+             // DX9: the game mixes in its own memory into one DirectSound buffer, which is parked
+             // with its cursor while the sound threads sleep (parkMix / resumeMix).
+             soundGuard: se ? guardVoices && xaudio.ready : soundWorkers === 2,
              shaderCreates, shaderReuses, mixStops, mixRestarts, mixCursor:heldMix?.cursor, soundIdle, arenas: arenas.length, sound: {ready: xaudio.ready, error: xaudio.error, voices: xaudio.voices.size, created: xaudio.created,
                      destroyCalls: xaudio.destroyCalls, kept: xaudio.kept, drains: xaudio.drains,
                      drainLeft: xaudio.drainLeft, releaseSkipped: xaudio.releaseSkipped, submits: xaudio.submits,
@@ -1852,7 +1862,7 @@ rpc.exports = {
 
 // Keep every SE-only RPC inaccessible even to direct Controller users.
 if (!se) {
-    const allowed = new Set(['status','pause','load','step','drain','resume','live','recordscene','fallbacktest','holdgate','releasegate','shutdown','unhook','cheat',
+    const allowed = new Set(['status','pause','load','step','drain','resume','live','recordscene','fallbacktest','holdgate','releasegate','shutdown','unhook','cheat','audible',
         'recordstart','recordpoll','recordfinish','recordstop','keepsaves']);
     for (const name of Object.keys(rpc.exports)) {
         if (!allowed.has(name)) rpc.exports[name] = () => { throw new Error('Unavailable on DX9: ' + name); };

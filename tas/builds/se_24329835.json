@@ -6,6 +6,34 @@
   "steamAppId": 329050,
   "config": "CAPCOM/DEVILMAYCRY4SPECIALEDITION/config.ini",
   "rollback": true,
+  "battle": {
+    "position": "0x40", "enemyLine": "0x194", "cooldown": "0x25e4",
+    "playerHp": "0x1b00", "playerHpMax": "0x1b04", "playerDt": "0x2504", "playerDtMax": "0x2508",
+    "damageVtableRva": "0xb2d184", "damageOffsets": [6736, 6744, 6752, 6768, 6784, 11312, 11648, 15928, 34280],
+    "damageHp": "0x30", "damageMax": "0x34", "damageExtent": "0x34",
+    "action": "0x1a00", "enemyAction": 4, "phase": 5, "motion": "0x4e4", "motionFrame": "0x530",
+    "playerStop": "0x2448", "enemyStop": "0x1944", "playerFrozen": "0x1531", "enemyFrozen": "0x1948",
+    "buttons": "0x1920", "unitDelta": "0x1c"
+  },
+  "step": {
+    "predicate": "0x1eeef0",
+    "attempt": "0x52a890",
+    "move": "0x4c5570",
+    "table": "0x1818",
+    "joints": "0x4c4",
+    "remap": "0x4c8",
+    "stride": "0xa0",
+    "matrix": "0x10",
+    "enabled": "0x25f5",
+    "flags": "0x1a64",
+    "limit": "0xb87bd4",
+    "enemyEnabled": "0x1820",
+    "enemyState": "0xc",
+    "enemyFlags": "0x11d8",
+    "skill": null, "overlapLimit": null, "maskHelper": null,
+    "attemptPlayer": "ecx", "moveActor": "ecx",
+    "inputUpdate": "0x4c1490", "nativeMask": "0x1ef0e0", "success": "0x52a9ec", "action": 25
+  },
   "strategy": {
     "clock": "qpc",
     "focus": "thiscall",
@@ -22,7 +50,6 @@
     "clock": "0xd8d45c",
     "gameMode": "0xd84c78"
   },
-  "damageSample": {"playerHp": "0x1b00", "hp": "0x30", "enemyList": "0x194"},
   "camera": {"slot": "0xd8d474", "view": 192, "projection": 256},
   "controls": {
     "save": "0xd64b48", "character": "0x19ac", "tables": [456, 696, 948, 1212, 1460],

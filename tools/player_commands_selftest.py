@@ -155,14 +155,15 @@ def main():
         ui = SimpleNamespace(root=Mock(), game=None, sound_play=Mock(), overlay_var=Mock(), overlay=Mock(),
                              overlay_button=Mock(), sound_button=Mock(), record_button=Mock(),
                              check_button=Mock(), save_button=Mock(), state_button=Mock())
-        Player.set_version(ui, game, {"guardVoices": True, "sound": {"ready": True}, "playerProtocol": 10})
+        Player.set_version(ui, game, {"soundGuard": True, "playerProtocol": 10})
         sound = ui.sound_button.configure.call_args.kwargs["state"] == "normal"
-        check(sound == (game == "se"), f"{game}: sound checkbox")
-        check(ui.overlay_button.configure.call_args.kwargs["state"] ==
-              ("normal" if game == "se" else "disabled"), f"{game}: overlay")
-        service = SimpleNamespace(ctl=SimpleNamespace(build={"game": game}, session=None, pid=0))
+        check(sound, f"{game}: sound checkbox")
+        check(not ui.overlay_button.configure.called, f"{game}: F6 stays enabled")
+        build = {"game": game, "id": "dx9_21360" if game == "dx9" else "se_24329835"}
+        service = SimpleNamespace(ctl=SimpleNamespace(build=build, session=None, pid=0))
+        check(Service.dispatch(service, "motions", {})["nero"]["action"]["enemyStep"] == 25, f"{game}: JC table")
         with patch("service.service_operations.dispatch", return_value=True):
-            for command, methods in sorted(RPC.items()):
+            for command, methods in sorted((RPC | {"probe": STEP}).items()):
                 disabled = command.startswith("play-sound") and not sound
                 try:
                     Service.dispatch(service, command, {})

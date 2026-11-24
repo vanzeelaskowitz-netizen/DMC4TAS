@@ -59,7 +59,7 @@ class Agent:
 
     def status(self):
         return {"savesKept": self.kept, "savesLost": self.lost, "soundTicks": self.ticks,
-                "soundSticky": self.sticky, "guardVoices": False}
+                "soundSticky": self.sticky, "soundGuard": False}
 
     def keepsaves(self, on):
         self.kept = bool(on)

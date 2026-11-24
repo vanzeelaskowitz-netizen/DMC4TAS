@@ -100,12 +100,8 @@ def audible_start(server, args):
         raise RuntimeError("已经在带声音播放了")
     if route is None or route.origin is None or not route.checkpoints:
         raise RuntimeError("还没有时间线：先接管游戏、载入脚本")
-    state = ctl.rpc.status()
-    sound = state.get("sound") or {}
-    if not state.get("guardVoices"):
-        raise RuntimeError("播放带音效暂时关闭了：它用到的声音保护会让“交还操作”崩溃，修好之前先停用")
-    if not sound.get("ready"):
-        raise RuntimeError(f"声音保护没有装上（{sound.get('error')}），不能带声音播放")
+    if not ctl.rpc.status()["soundGuard"]:
+        raise RuntimeError("声音保护没有启用，不能带声音播放（特别版默认关闭：它会让“交还操作”崩溃，修好之前先停用）")
     if not getattr(route, "sound_guarded", False):
         raise RuntimeError("这条时间线不能带声音播放：它是读档得到的，或者声音保护是中途才打开的，"
                            "游戏的声音状态和第 0 帧对不上，放了会崩")
@@ -167,7 +163,7 @@ def new_route(server, sticky=False):
     # safe when the voice guard was on for the whole timeline: with it off, voices the game drops
     # are really destroyed, and the first frame still points at them (2026-11-22 crash at
     # exe+0x809957, a voice with no vtable, after the guard was switched on mid-timeline).
-    server.route.sound_guarded = bool(state.get("guardVoices"))
+    server.route.sound_guarded = bool(state.get("soundGuard"))
     # While save states exist, new timelines store their snapshots against the same full image
     # as the saves do (when the arenas still lie where they did): one 561 MB image instead of one
     # per take-over, and a loaded save can be restored page by page.

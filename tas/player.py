@@ -431,7 +431,7 @@ class Player:
                 self.set_cheat(name, not self.cheat_vars[name].get())
             self.cheat_keys[key] = down
         down = bool(user32.GetAsyncKeyState(0x75) & 0x8000)          # F6
-        if down and not self.overlay_key and front and self.game == "se":
+        if down and not self.overlay_key and front and self.game:
             self.overlay_var.set(not self.overlay_var.get())
             self.overlay.set(self.overlay_var.get())
         self.overlay_key = down
@@ -638,6 +638,10 @@ class Player:
         self.refresh()                       # where the game is now, after a possible take-over
         if self.sound_play.get() and self.sound_button.cget("state") == "normal" and self.length:
             self.flush_edit()
+            if self.game == "dx9" and self.game_window:
+                # DirectSound silences a program whose window is not in front (tried 2026-11-24).
+                # The player is in front right now, so Windows lets it hand the focus over.
+                ctypes.windll.user32.SetForegroundWindow(ctypes.c_void_p(self.game_window))
             result = self.call("play-sound")
             if result is not None:
                 self.playing = self.sounding = True
@@ -1403,7 +1407,7 @@ class Player:
         except ValueError:
             self.game_window = None
         self.set_version(state.get("game", "se"), state)
-        self.overlay.attach(state.get("gamePid") if self.game == "se" else None, self.game_window)
+        self.overlay.attach(self.game, state.get("gamePid"), self.game_window)
         frozen = state.get("parked") and state.get("mode") not in ("observe", "record", "record-finish")
         self.overlay.verdict = ((state.get("last") or {}).get("combat") or {}).get("stepCheck") if frozen else None
         aids = state.get("cheats") or {}
@@ -1450,9 +1454,7 @@ class Player:
 
     def set_version(self, game, state):
         reason = None
-        if game == "dx9":
-            reason = "混音恢复未验证"
-        elif not state.get("guardVoices") or not (state.get("sound") or {}).get("ready"):
+        if not state.get("soundGuard"):
             reason = "声音保护未启用"
         elif not state.get("soundRouteReady", True):
             reason = "当前时间线未保护声音"
@@ -1468,12 +1470,6 @@ class Player:
                         ("（旧服务，重新启动游戏后可录制和存读档）" if legacy else ""))
         for button in (self.record_button, self.check_button, self.save_button, self.state_button):
             button.configure(state="disabled" if legacy else "normal")
-        if game == "se":
-            self.overlay_button.configure(state="normal", text="F6 踩头方框")
-        else:
-            self.overlay_var.set(False)
-            self.overlay.set(False)
-            self.overlay_button.configure(state="disabled", text="F6 方框（屏幕投影未验证）")
 
     def show(self, row, frame, headline=True):
         changed = (frame or 0) != self.frame

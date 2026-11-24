@@ -18,6 +18,7 @@ class Pointer {
     isNull() { return this.n === 0; }
     toString() { return String(this.n); }
     readU32() { return memory.get(this.n) ?? 0; }
+    readS32() { return this.readU32() | 0; }
     readU8() { return this.readU32(); }
     readPointer() { return new Pointer(this.readU32()); }
     readCString() { return memory.get(this.n); }
@@ -42,7 +43,12 @@ function typed(addr, ...names) {
     }
 }
 function load(build) {
-    function NativeFunction() { assert.equal(build.game, 'se'); }
+    function NativeFunction(address, _, args, options) {
+        assert.equal(options.abi, build.game === 'dx9' ? 'stdcall' : 'thiscall');
+        assert.equal(args[0], 'pointer');
+        assert.ok([build.step.predicate, build.step.maskHelper].includes(address.n - base));
+        return () => 1;
+    }
     return vm.runInNewContext(source + '\ncombat', {
         build, Process:{mainModule:{base:new Pointer(base)}}, NativeFunction
     });
@@ -57,7 +63,7 @@ typed(player, 'uPlayerNero', 'uPlayer'); typed(enemy, 'uEm000', 'uEnemy'); typed
 memory.set(mediator + 0x24, player); memory.set(unit + 0x194, enemy);
 memory.set(enemy + 8, boss); memory.set(boss + 8, enemy); // corrupted cycle
 for (const e of [enemy, boss]) {
-    memory.set(e + 0x152c, base + cfg.damageVtableRva);
+    memory.set(e + 0x152c, base + profile.battle.damageVtableRva);
     memory.set(e + 0x1544, 40); memory.set(e + 0x1548, 100);
 }
 memory.set(player + 0x15cc, 10); memory.set(player + 0x15d0, 60);
@@ -80,7 +86,7 @@ dx.setCheat('kill', true); memory.set(mediator+cfg.enemyNoDeath, 1); dx.cheat();
 assert.equal(dx.cheatStatus().enemiesCovered, 0); assert.equal(memory.get(enemy+0x1544), 100);
 memory.set(mediator+cfg.enemyNoDeath, 0); memory.set(enemy+0x152c+0x84, 0x100);
 dx.cheat(); assert.equal(dx.cheatStatus().enemiesCovered, 0); assert.equal(memory.get(enemy+0x1544), 100);
-memory.set(enemy+0x152c+0x84, 0); memory.set(enemy+0x1500, base + cfg.damageVtableRva);
+memory.set(enemy+0x152c+0x84, 0); memory.set(enemy+0x1500, base + profile.battle.damageVtableRva);
 dx.cheat(); assert.equal(dx.cheatStatus().enemiesCovered, 0);
 memory.set(enemy+0x1500, 0); memory.set(mediator+0x24, 0); dx.cheat();
 assert.equal(memory.get(enemy+0x1544), 100); assert.equal(dx.cheatStatus().enemies, 0);
@@ -115,3 +121,38 @@ assert.equal(se.controls(new Pointer(player), new Map()), null);
 memory.set(player + controls.character, 0);
 memory.set(game + controls.tables[0] + controls.slots.jump, 75);
 assert.equal(se.controls(new Pointer(player), new Map([[75, 'K']])).jump, 'K');
+
+const jc = profile.step, table = next + 1024, joints = table + 512, remap = joints + 1024;
+memory.set(enemy+jc.table, table); memory.set(enemy+jc.joints, joints); memory.set(enemy+jc.remap, remap);
+memory.set(enemy+jc.enemyEnabled, 1); memory.set(table, 3); memory.set(table+4, 5);
+memory.set(remap+3, 2); memory.set(table+32, -1);
+for (const [i,x] of [1,2,3].entries()) memory.set(table+16+i*4, x);
+const world = [1,0,0,0, 0,1,0,0, 0,0,1,0, 9,83,27,1];
+world.forEach((x,i) => memory.set(joints+2*jc.stride+jc.matrix+i*4,x));
+for (const [x,inside] of [[10,true],[15,false]]) {
+    const result = dx.dxEnemy(new Pointer(enemy),[x,0,30]);
+    assert.deepEqual(Array.from(result.spheres[0].center),[10,85,30]);
+    assert.equal(result.inSphere,inside);
+    assert.equal(result.spheres[0].activeAtCheck,true);
+}
+const hooks = new Map();
+dx.install((address, hooksForSite) => hooks.set(address.n-base,hooksForSite));
+assert.deepEqual([...hooks.keys()], [jc.attempt, jc.move]);
+const seStep = buildProfile('se_24329835').step;
+const seSites = [];
+se.install(address => seSites.push(address.n-base));
+assert.deepEqual(seSites, [seStep.attempt, seStep.move, seStep.inputUpdate, seStep.predicate,
+    seStep.nativeMask, seStep.success]);
+memory.set(base+profile.controls.save,game); memory.set(player+profile.controls.character,1);
+memory.set(game+jc.skill[1],1); memory.set(player+jc.enabled,1); memory.set(player+jc.flags,2);
+memory.set(base+jc.limit,0); memory.set(player+profile.battle.cooldown,0);
+[10,0,30].forEach((x,i) => memory.set(player+profile.battle.position+i*4,x));
+dx.begin(1);
+hooks.get(jc.attempt).onEnter.call({threadId:1,context:{edi:new Pointer(player)}});
+memory.set(player+jc.enabled,0);
+const frame = dx.dxFrame(new Pointer(player));
+assert.equal(frame.stepCheck.allowed,true);
+assert.equal(frame.stepCheck.enemies[enemy].inside[0],true);
+dx.begin(1);
+assert.equal(dx.dxFrame(new Pointer(player)).stepCheck.allowed,false);
+console.log('PASS DX9 joint remap, sphere boundary, native ABI, decision before movement and player gates');

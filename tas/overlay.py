@@ -1,19 +1,4 @@
-"""Boxes over the game window that mark where enemies can be stepped on (Enemy Step / jump cancel).
-
-Read-only: every tick the enemies' step spheres are read from the game's memory, projected with
-the game camera's own matrices, and drawn as squares on a transparent, click-through window that
-sits exactly over the game's picture. A box is red when a jump would be an Enemy Step: the player's
-step point (85 above the feet) is inside that sphere and both sides allow a step. It is yellow when
-the point is in reach but the player may not step right now (on the ground, the first frames of a
-jump, cooldown), green otherwise. While the game is frozen on a frame the colours are the answer
-for that frame taken where the game decides it (`stepCheck`, before that frame's movement); the
-positions after the frame can differ by a frame's worth of movement (seen 2026-11-21).
-
-Addresses are for Steam build 24329835 (see docs/MAP.md): enemy list [0x118D450]+0x194, next
-+0x14; sphere table [E+0x1818] (32 bytes each: joint, radius, local centre at +16), joint remap
-[E+0x4C8], joint matrices [E+0x4C4] + index*160 + 16; camera sCamera [0x118D474] with the view
-matrix at +0xC0 and the projection at +0x100 (row vectors, found 2026-11-20).
-"""
+"""Read-only, click-through Enemy Step markers over the game client."""
 import ctypes
 from ctypes import wintypes
 import struct
@@ -30,9 +15,20 @@ kernel32.OpenProcess.restype = wintypes.HANDLE
 user32.GetWindowLongW.restype = ctypes.c_long
 
 
+def visible_mask(mask, balls, threshold):
+    """The DX9 helper keeps the higher top when two spheres overlap in XZ."""
+    for i, (index, a, radius, _) in enumerate(balls):
+        if mask & (1 << index):
+            for other, b, other_radius, _ in balls[i + 1:]:
+                if (a[0]-b[0])**2 + (a[2]-b[2])**2 < threshold:
+                    lower = other if b[1] + other_radius <= a[1] + radius else index
+                    mask &= ~(1 << lower)
+    return mask
+
+
 class Overlay:
     def __init__(self, root):
-        self.camera = next(p["camera"] for p in profiles() if p["game"] == "se")
+        self.profiles = {p["game"]: p for p in profiles()}
         self.root = root
         self.window = tk.Toplevel(root)
         self.window.overrideredirect(True)
@@ -56,7 +52,8 @@ class Overlay:
         self.verdict = None
 
     # --- game memory -----------------------------------------------------------------------
-    def attach(self, pid, hwnd):
+    def attach(self, game, pid, hwnd):
+        self.build = self.profiles[game]
         if pid != self.pid:
             if self.handle:
                 kernel32.CloseHandle(self.handle)
@@ -92,52 +89,72 @@ class Overlay:
             self.types[table] = b"uEnemy" in names
         return self.types[table]
 
+    def enemy_balls(self, enemy, position, step):
+        table, joints, remap = (self.u32(enemy + step[key]) for key in ("table", "joints", "remap"))
+        data = self.read(table, 32 * 32) if table and joints and remap else b""
+        balls = []
+        for index in range(len(data) // 32):
+            joint, radius = struct.unpack_from("<if", data, index * 32)
+            if joint == -1:
+                break
+            local = struct.unpack_from("<3f", data, index * 32 + 16)
+            slot = self.read(remap + (joint & 255), 1)
+            if not slot or slot[0] == 255:
+                continue
+            m = self.floats(joints + slot[0] * step["stride"] + step["matrix"], 16)
+            if not m:
+                continue
+            v = [local[0] * m[k] + local[1] * m[4 + k] + local[2] * m[8 + k] + m[12 + k] for k in range(4)]
+            if v[3] == 0:
+                continue
+            centre = [v[k] / v[3] for k in range(3)]
+            inside = bool(position) and (centre[0] - position[0]) ** 2 + (centre[1] - position[1] - 85) ** 2 \
+                + (centre[2] - position[2]) ** 2 < radius * radius
+            balls.append((index, centre, radius, inside))
+        return balls
+
     def spheres(self):
-        """[(centre, radius, player inside)] of every enemy's step spheres."""
+        """Read world centres, radii and colours for the active build."""
         found = []
-        player = self.u32(self.u32(0x1154B34) + 0x24)
-        position = self.floats(player + 0x40, 3) if player else None
-        # The player's side of the game's check (0x92A890): steps enabled, the action allows one
-        # (only in the air, and not in the first frames of a jump), cooldown over.
-        cooldown, limit = (self.floats(player + 0x25E4, 1), self.floats(0xF87BD4, 1)) if player else (None, None)
-        allowed = bool(player and self.read(player + 0x25F5, 1) == b"\x01" and self.u32(player + 0x1A64) & 2
-                       and cooldown and limit and cooldown[0] <= limit[0])
-        enemy, seen = self.u32(self.u32(0x118D450) + 0x194), set()
+        b = self.build
+        step, battle = b["step"], b["battle"]
+        player = self.u32(self.u32(0x400000 + b["roots"]["mediator"]) + b["scene"]["player"])
+        position = self.floats(player + battle["position"], 3) if player else None
+        cooldown = self.floats(player + battle["cooldown"], 1) if player else None
+        limit = self.floats(0x400000 + step["limit"], 1)
+        allowed = bool(player and self.read(player + step["enabled"], 1) == b"\x01"
+                       and self.u32(player + step["flags"]) & 2 and cooldown and limit and cooldown[0] <= limit[0])
+        if allowed and step["skill"] is not None:
+            controls = b["controls"]
+            character = self.u32(player + controls["character"])
+            save = self.u32(0x400000 + controls["save"])
+            allowed = character < len(step["skill"]) and self.read(save + step["skill"][character], 1) == b"\x01"
+        enemy = self.u32(self.u32(0x400000 + b["roots"]["unit"]) + battle["enemyLine"])
+        seen = set()
         while enemy and enemy not in seen and len(seen) < 256:
             seen.add(enemy)
             if self.is_enemy(enemy):
-                # The enemy's own conditions in the game's check (0x5EEEF0), without the sphere mask.
-                state = self.u32(enemy + 0xC)
-                steppable = bool(self.read(enemy + 0x1820, 1) not in (b"", b"\0") and state & 7 == 2 and state & 0x400
-                                 and not self.u32(enemy + 0x11D8) & 0x80)
-                table, joints, remap = self.u32(enemy + 0x1818), self.u32(enemy + 0x4C4), self.u32(enemy + 0x4C8)
-                data = self.read(table, 32 * 32) if table and joints and remap else b""
-                for index in range(len(data) // 32):
-                    joint, radius = struct.unpack_from("<if", data, index * 32)
-                    if joint == -1:
-                        break
-                    local = struct.unpack_from("<3f", data, index * 32 + 16)
-                    slot = self.read(remap + (joint & 255), 1)
-                    if not slot or slot[0] == 255:
-                        continue
-                    m = self.floats(joints + slot[0] * 160 + 16, 16)
-                    if not m:
-                        continue
-                    v = [local[0] * m[k] + local[1] * m[4 + k] + local[2] * m[8 + k] + m[12 + k] for k in range(4)]
-                    if v[3] == 0:
-                        continue
-                    centre = [v[k] / v[3] for k in range(3)]
-                    inside = bool(position) and (centre[0] - position[0]) ** 2 + (centre[1] - position[1] - 85) ** 2 \
-                        + (centre[2] - position[2]) ** 2 < radius * radius
-                    colour = FREE if not (inside and steppable) else INSIDE if allowed else BLOCKED
-                    judged = (self.verdict or {}).get("enemies", {}).get(f"{enemy:#x}")
+                state = self.u32(enemy + step["enemyState"])
+                steppable = bool(self.read(enemy + step["enemyEnabled"], 1) not in (b"", b"\0") and state & 7 == 2 and state & 0x400
+                                 and not self.u32(enemy + step["enemyFlags"]) & 0x80)
+                balls = self.enemy_balls(enemy, position, step)
+                mask = -1
+                if step["overlapLimit"] is not None:
+                    threshold = self.floats(0x400000 + step["overlapLimit"], 1)
+                    if threshold:
+                        mask = visible_mask(self.u32(enemy + step["mask"]), balls, threshold[0])
+                judged = (self.verdict or {}).get("enemies", {}).get(f"{enemy:#x}")
+                for index, centre, radius, inside in balls:
+                    hit = inside and steppable and mask & (1 << index)
+                    permitted = allowed
                     if judged and judged.get("inside") and index < len(judged["inside"]):
                         # The game's own answer for the frame on screen, taken at the moment it
                         # decides (before that frame's movement), not the positions afterwards.
-                        hit = judged["inside"][index] and judged.get("can")
-                        colour = FREE if not hit else INSIDE if self.verdict.get("allowed") else BLOCKED
+                        hit = judged["inside"][index] and judged.get("can") and (judged.get("mask", mask) & (1 << index))
+                        permitted = self.verdict["allowed"]
+                    colour = (INSIDE if permitted else BLOCKED) if hit else FREE
                     found.append((centre, radius, colour))
-            enemy = self.u32(enemy + 0x14)
+            enemy = self.u32(enemy + b["scene"]["next"])
         return found
 
     # --- drawing ---------------------------------------------------------------------------
@@ -162,9 +179,9 @@ class Overlay:
         self.window.geometry(f"{width}x{height}+{corner.x}+{corner.y}")
         self.window.deiconify()
         self.window.attributes("-topmost", True)
-        camera = self.u32(0x400000 + self.camera["slot"])
-        view = self.floats(camera + self.camera["view"], 16) if camera else None
-        projection = self.floats(camera + self.camera["projection"], 16) if camera else None
+        camera = self.u32(0x400000 + self.build["camera"]["slot"])
+        view = self.floats(camera + self.build["camera"]["view"], 16) if camera else None
+        projection = self.floats(camera + self.build["camera"]["projection"], 16) if camera else None
         self.canvas.delete("all")
         self.count = 0
         if not view or not projection:
