@@ -22,6 +22,7 @@ runs/*
 !runs/streak-example.tas
 !runs/redblade-demo.tas
 !runs/fight-probe.tas
+!runs/dx9-exceed-demo.tas
 
 # Notes from the development process (task sheets, reports, machine-specific tool list)
 AGENTS.md
