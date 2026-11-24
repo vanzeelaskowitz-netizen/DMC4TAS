@@ -65,6 +65,11 @@ let replay = null;            // state of a scene-synchronised replay, see repla
 let lease = Date.now() + 15000;
 let failure = null;
 let entryCount = 0;
+let snapshotsAlive = false;
+let savesKept = false;          // named save states exist (see gpuKept)
+let savesScene = null;
+let savesLost = null;           // why they were dropped, for the service to report
+let soundTicks = 0;             // times a sound thread body has run; equal ticks = no sound in between
 let readCount = 0;
 let testFallback = false;
 let presentCount = 0;
@@ -103,8 +108,15 @@ function replaceImport(entry, result, args, implementation) {
     imports.push(entry);
 }
 
+// A game thread can enter a hook while this script is still loading (the DX9 build does, right at
+// start-up), when state further down is not declared yet. Hooks stay silent until the last line.
+let loaded = false;
+
 function attach(ptr, callbacks) {
-    const listener = Interceptor.attach(ptr, callbacks);
+    const quiet = fn => function (...args) { if (loaded) return fn.apply(this, args); };
+    const wrapped = typeof callbacks === 'function' ? quiet(callbacks) : Object.fromEntries(
+        Object.entries(callbacks).map(([name, fn]) => [name, quiet(fn)]));
+    const listener = Interceptor.attach(ptr, wrapped);
     hooks.push(listener);
     return listener;
 }
@@ -803,17 +815,10 @@ Process.setExceptionHandler(details => {
 // TAS holds the game, both thread bodies are replaced by a short sleep: no sound, no stale reads.
 // After the first restore the hold stays on for good, because the sound state is then out of step.
 const soundReplaced = [];
-// Declared here, ahead of everything that hooks the game: a hooked function can be called by a
-// game thread while this script is still loading, and must not meet a variable that is not there yet.
-let snapshotsAlive = false;
 // Named save states (tas/savestate.py) outlive a timeline: the service keeps their snapshots after
 // control is handed back, so the GPU resource guard below stays on for as long as one exists.
 // They end with the room: the first loading or scene change seen while no timeline is running
 // drops them, and bumps sceneEpoch so that no snapshot from before can be restored by mistake.
-let savesKept = false;
-let savesScene = null;
-let savesLost = null;           // why they were dropped, for the service to report
-let soundTicks = 0;             // times a sound thread body has run; equal ticks = no sound in between
 function gpuKept() { return snapshotsAlive || savesKept; }
 function dropSaves(reason) {
     savesKept = false;
@@ -1853,3 +1858,5 @@ if (!se) {
         if (!allowed.has(name)) rpc.exports[name] = () => { throw new Error('Unavailable on DX9: ' + name); };
     }
 }
+
+loaded = true;      // every hook may act from here on (see attach)
