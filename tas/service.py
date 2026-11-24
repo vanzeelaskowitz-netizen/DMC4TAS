@@ -9,6 +9,7 @@ import sys
 import time
 import traceback
 
+from lang import L
 from tasctl import Controller, ROOT
 from rollback_memory import ProcessMemory, session_owner
 import service_operations
@@ -63,14 +64,15 @@ class Service(socketserver.TCPServer):
             "save", "back", "goto", "configure", "accept", "trace", "cheat", "m1-load", "m1-step", "m1-resume", "m1-pause", "m1-fallback-test", "record-scene",
             "probe", "motions", "play-sound", "play-sound-stop", "take-start", "take-stop", "unpause", "state-save", "state-load", "state-list", "state-delete",
         }:
-            raise RuntimeError("原版 DX9 不支持这项命令。")
+            raise RuntimeError(L("原版 DX9 不支持这项命令。", "The original (DX9) does not support this command."))
         if (self.ctl.build["game"] == "dx9" and self.ctl.session
                 and (getattr(self, "route", None) or command in ("back", "goto"))):
             state = self.ctl.rpc.status()
             if state["savesLost"] and not state["snapshotsAlive"]:
                 self.route = None
                 if command in ("back", "goto"):
-                    raise RuntimeError(f"旧快照已清除（{state['savesLost']}）")
+                    raise RuntimeError(L(f"旧快照已清除（{state['savesLost']}）",
+                                         f"Old snapshots were cleared ({state['savesLost']})"))
         if command == "status":
             if self.ctl.session is None:
                 return {"mode": "detached", "parked": False, "gamePid": self.ctl.pid}
@@ -119,8 +121,11 @@ class Service(socketserver.TCPServer):
                 try:
                     service_operations.hand_back(self)
                 except Exception as error:
-                    raise RuntimeError(f"做过后退之后不能直接卸下工具，游戏会崩溃（{error}）。更新工具代码用 "
-                                       "reload；确实要卸下（游戏会关掉）用 shutdown force。") from error
+                    raise RuntimeError(L(f"做过后退之后不能直接卸下工具，游戏会崩溃（{error}）。更新工具代码用 "
+                                         "reload；确实要卸下（游戏会关掉）用 shutdown force。",
+                                         f"After a step back the tool cannot simply be removed, the game would "
+                                         f"crash ({error}). Use reload to update the tool's code; to remove it "
+                                         "anyway (the game will close) use shutdown force.")) from error
             result = self.ctl.detach()
             self.stopped = True
             return {"stopped": True, "unhooked": result is not None}

@@ -11,6 +11,7 @@ import time
 from client import Client
 from tasctl import ROOT, start_service, target_pid
 from keycodes import KEY_CODES, KeyCodes
+from lang import L
 from rollback_memory import ProcessMemory
 from timeline import Timeline, format_script, parse_script
 from window_mode import require_windowed
@@ -134,7 +135,7 @@ def ready_process(game="se", pid=None):
         except (OSError, RuntimeError):
             pass
         time.sleep(.25)
-    raise TimeoutError("未等到游戏键盘和渲染器初始化。")
+    raise TimeoutError(L("未等到游戏键盘和渲染器初始化。", "The game's keyboard and renderer did not finish starting up."))
 
 
 def connect():

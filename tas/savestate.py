@@ -29,6 +29,7 @@ from pathlib import Path
 import re
 import time
 
+from lang import L
 from rollback import input_prefix
 from tasctl import ROOT
 from timeline import parse_script
@@ -56,7 +57,7 @@ def clean_name(name):
     name = re.sub(r'[\\/:*?"<>|\r\n\t]', " ", str(name or "")).strip()
     name = re.sub(r"\s+", " ", name)[:40].strip(" .")
     if not name:
-        raise ValueError("存档要有个名字")
+        raise ValueError(L("存档要有个名字", "A save state needs a name"))
     return name
 
 
@@ -80,8 +81,9 @@ def describe(row):
     player = combat.get("player") or {}
     position = player.get("position")
     enemies = combat.get("enemies") or []
-    where = "位置 ({:.0f}, {:.0f}, {:.0f})".format(*position[:3]) if position and len(position) >= 3 else "位置未知"
-    return f"{where}　敌人 {len(enemies)} 个"
+    where = L("位置 ({:.0f}, {:.0f}, {:.0f})", "position ({:.0f}, {:.0f}, {:.0f})").format(*position[:3]) \
+        if position and len(position) >= 3 else L("位置未知", "position unknown")
+    return L(f"{where}　敌人 {len(enemies)} 个", f"{where}  {len(enemies)} enemies")
 
 
 def summary(save):
@@ -113,7 +115,7 @@ def script_file(save):
                 return path, text
         except (OSError, ValueError):
             pass
-    raise RuntimeError("给这个存档的脚本找不到可用的文件名")
+    raise RuntimeError(L("给这个存档的脚本找不到可用的文件名", "No free file name left for this save state's script"))
 
 
 def listing(server):
@@ -126,28 +128,34 @@ def save_state(server, name):
     ctl, route = server.ctl, getattr(server, "route", None)
     name = clean_name(name)
     if route is None or route.origin is None or not route.checkpoints:
-        raise RuntimeError("还没有时间线：先接管游戏（或录一段）再存档")
+        raise RuntimeError(L("还没有时间线：先接管游戏（或录一段）再存档",
+                             "No timeline yet: take over the game (or record something) before saving"))
     saves = states(server)
     if name not in saves and len(saves) >= LIMIT:
-        raise RuntimeError(f"存档最多 {LIMIT} 个，先删掉一个不用的")
+        raise RuntimeError(L(f"存档最多 {LIMIT} 个，先删掉一个不用的",
+                             f"At most {LIMIT} save states: delete one you no longer need first"))
     route.pause()
     first = route.checkpoints[0][0]
     if first.frame != route.origin:
-        raise RuntimeError("这条时间线第 0 帧的快照不在了，存不了档")
+        raise RuntimeError(L("这条时间线第 0 帧的快照不在了，存不了档",
+                             "The snapshot of frame 0 of this timeline is gone, so it cannot be saved"))
     state = ctl.status()
     frame = state["frame"] - route.origin
     text = Path(route.path).read_text(encoding="utf-8-sig") if route.path else ""
     # The file is what the editor shows; the route's timeline is what the game was fed. A save of
     # a frame that the file would not reproduce is no use to anyone.
     if input_prefix(parse_script(text), frame) != input_prefix(route.timeline, frame):
-        raise RuntimeError("脚本文件和游戏里正在跑的输入不一样（刚改过脚本还没生效？），先让脚本生效再存档")
+        raise RuntimeError(L("脚本文件和游戏里正在跑的输入不一样（刚改过脚本还没生效？），先让脚本生效再存档",
+                             "The script file differs from the inputs the game is running (an edit not applied "
+                             "yet?). Let the script apply, then save"))
     if frame == 0:
         at = first
     else:
         route.save(detail=False)
         at = route.last_saved
         if at.frame != state["frame"]:
-            raise RuntimeError("存档时游戏的帧号变了，没有存上，再试一次")
+            raise RuntimeError(L("存档时游戏的帧号变了，没有存上，再试一次",
+                                 "The game's frame changed while saving, nothing was saved. Try again"))
     agent = ctl.rpc.keepsaves(True)
     trace = {number: entry for number, entry in getattr(server, "trace", {}).items()
              if first.frame <= number <= at.frame}
@@ -165,7 +173,7 @@ def save_state(server, name):
 def delete_state(server, name):
     saves = states(server)
     if saves.pop(name, None) is None:
-        raise RuntimeError(f"没有叫“{name}”的存档")
+        raise RuntimeError(L(f"没有叫“{name}”的存档", f'No save state named "{name}"'))
     if not saves:
         server.save_base = None
         server.ctl.rpc.keepsaves(False)
@@ -185,8 +193,11 @@ def quiet(ctl, since):
     while True:
         result = ctl.rpc.soundbusy(since, False)
         if not result.get("ready"):
-            raise RuntimeError(f"读不到游戏的声音状态（{result.get('error')}）。这个存档是上一次交还操作之前存的，"
-                               "不确认声音放完就读它会崩，所以没有读")
+            raise RuntimeError(L(f"读不到游戏的声音状态（{result.get('error')}）。这个存档是上一次交还操作之前存的，"
+                                 "不确认声音放完就读它会崩，所以没有读",
+                                 f"Cannot read the game's sound state ({result.get('error')}). This save state was "
+                                 "made before the last hand-back; loading it before the sound has finished would "
+                                 "crash, so it was not loaded"))
         calm = calm + 1 if not result["busy"] else 0
         if calm >= 2:           # twice in a row, 50 ms apart
             return round(time.monotonic() - started, 2)
@@ -194,11 +205,15 @@ def quiet(ctl, since):
             break
         time.sleep(.05)
     if result["streams"]:
-        raise RuntimeError("背景音乐的缓冲一直没放完，现在读这个存档不安全。过几秒再试一次")
+        raise RuntimeError(L("背景音乐的缓冲一直没放完，现在读这个存档不安全。过几秒再试一次",
+                             "The music buffer keeps playing, loading this save state now is not safe. "
+                             "Try again in a few seconds"))
     ctl.rpc.soundbusy(since, True)      # looping effects started since the save: stop and empty them
     time.sleep(.05)
     if ctl.rpc.soundbusy(since, False)["busy"]:
-        raise RuntimeError("还有声音停不下来，现在读这个存档不安全。过几秒再试一次")
+        raise RuntimeError(L("还有声音停不下来，现在读这个存档不安全。过几秒再试一次",
+                             "A sound will not stop, loading this save state now is not safe. "
+                             "Try again in a few seconds"))
     return round(time.monotonic() - started, 2)
 
 
@@ -209,7 +224,9 @@ def load_state(server, name):
     save = saves.get(name)
     if save is None:
         lost = getattr(server, "saves_lost", None)
-        raise RuntimeError(f"没有叫“{name}”的存档" + ("（换过房间或读过盘，之前的存档都失效了）" if lost else ""))
+        raise RuntimeError(L(f"没有叫“{name}”的存档", f'No save state named "{name}"') + (
+            L("（换过房间或读过盘，之前的存档都失效了）",
+              " (the room changed or was reloaded, so the earlier save states are gone)") if lost else ""))
     route = getattr(server, "route", None)
     if route is None:
         route = new_route(server)
@@ -222,7 +239,9 @@ def load_state(server, name):
         route.save(detail=False, clean=not agent.get("soundSticky"))
     if route.clean is None:
         if agent.get("soundSticky"):
-            raise RuntimeError("这条时间线没有可以安全交还的起点（录制没有正常结束？）。先点“交还操作”，再接管、读档")
+            raise RuntimeError(L("这条时间线没有可以安全交还的起点（录制没有正常结束？）。先点“交还操作”，再接管、读档",
+                                 "This timeline has no safe point to hand back to (did a recording not end "
+                                 'normally?). Press "Hand back" first, then take over and load'))
         route.save(detail=False, clean=True)    # nothing has been restored yet: this frame will do
     path, text = script_file(save)          # before anything in the game is touched
     waited = quiet(ctl, save.ticks) if agent.get("soundTicks") != save.ticks else 0
@@ -231,7 +250,9 @@ def load_state(server, name):
     except RuntimeError as error:
         if "changed since this snapshot" in str(error):
             saves.pop(name, None)
-            raise RuntimeError("房间重新读过盘（或换过房间），这个存档已经失效，已删除") from error
+            raise RuntimeError(L("房间重新读过盘（或换过房间），这个存档已经失效，已删除",
+                                 "The room was reloaded (or changed), so this save state is no longer valid "
+                                 "and was deleted")) from error
         raise
     route.adopt(save.first, save.at, parse_script(text), str(path))
     # Playing with sound wakes the sound threads on frame 0 of the timeline. That frame now is a

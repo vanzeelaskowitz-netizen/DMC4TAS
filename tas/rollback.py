@@ -6,6 +6,7 @@ import json
 import os
 from time import perf_counter
 
+from lang import L
 from rollback_memory import MEM_IMAGE, MEM_PRIVATE, PAGE, WRITTEN, ProcessMemory, changed_runs
 from timeline import Timeline, read_script
 
@@ -652,7 +653,8 @@ class Rollback:
     def return_clean(self):
         """Restore the sound-clean snapshot, whatever the script says."""
         if self.clean is None:
-            raise RuntimeError("这条时间线没有声音线程睡下那一刻的存档")
+            raise RuntimeError(L("这条时间线没有声音线程睡下那一刻的存档",
+                                 "This timeline has no state from the moment the sound threads were put to sleep"))
         self.pause()
         self.running = False
         return self.engine.restore(self.clean)

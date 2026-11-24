@@ -13,8 +13,10 @@ import re
 
 if __package__:
     from .keycodes import KEY_CODES, KeyCodes
+    from tas.lang import L
 else:
     from keycodes import KEY_CODES, KeyCodes
+    from lang import L
 
 
 KEYS = frozenset(KEY_CODES)
@@ -104,14 +106,14 @@ def frame_line(line, names):
         count = int(tokens[0])
         tokens = tokens[1:]
         if not 1 <= count <= 100000:
-            raise ValueError("帧数要在 1 到 100000 之间")
+            raise ValueError(L("帧数要在 1 到 100000 之间", "The frame count must be between 1 and 100000"))
     keys = set()
     for token in tokens:
         if token in NO_KEYS:
             continue
         name = names.get(token.casefold())
         if name is None:
-            raise ValueError(f"不认识的键名 {token}")
+            raise ValueError(L(f"不认识的键名 {token}", f"Unknown key name {token}"))
         keys.add(name)
     return count, frozenset(keys)
 

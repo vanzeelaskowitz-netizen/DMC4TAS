@@ -13,6 +13,7 @@ import time
 import watch_launch
 from build_profile import identify
 from client import Client, ROOT, STATE
+from lang import L
 from record_boot import ready_process
 from tasctl import start_service
 
@@ -21,7 +22,7 @@ def say(text):
     print(text, flush=True)
 
 
-LABELS = {"dx9": "原版 DX9", "se": "特别版"}
+LABELS = {"dx9": L("原版 DX9", "Original (DX9)"), "se": L("特别版", "Special Edition")}
 LAST_GAME = ROOT / "last_game.txt"
 
 
@@ -32,7 +33,7 @@ def choose(games, parent=None):
     except FileNotFoundError:
         default = None
     window = tk.Toplevel(parent) if parent else tk.Tk()
-    window.title("选择 DMC4 版本")
+    window.title(L("选择 DMC4 版本", "Choose the DMC4 version"))
     window.resizable(False, False)
     selected = None
 
@@ -66,17 +67,23 @@ def refuse(path, digest, game):
     """Explain an executable this tool cannot drive: every feature relies on one build's addresses."""
     import tkinter
     from tkinter import messagebox
-    supported = "\n".join(f"{LABELS[p['game']]}：{p['sha256']}" for p in watch_launch.profiles())
-    text = (f"这个程序不是本工具支持的版本，不能使用：\n{path}\n\n它的 SHA-256：\n{digest}\n\n"
-            f"支持的版本（Steam 版）：\n{supported}\n\n"
-            "工具的所有功能都依赖某一个版本的内存地址，换了版本地址就对不上。"
-            "想支持这个版本，请把上面它的 SHA-256 发给作者。")
+    supported = "\n".join(f"{LABELS[p['game']]}{L('：', ': ')}{p['sha256']}" for p in watch_launch.profiles())
+    text = L(f"这个程序不是本工具支持的版本，不能使用：\n{path}\n\n它的 SHA-256：\n{digest}\n\n"
+             f"支持的版本（Steam 版）：\n{supported}\n\n"
+             "工具的所有功能都依赖某一个版本的内存地址，换了版本地址就对不上。"
+             "想支持这个版本，请把上面它的 SHA-256 发给作者。",
+             f"This program is not a version this tool supports, so it cannot be used:\n{path}\n\n"
+             f"Its SHA-256:\n{digest}\n\nSupported versions (Steam):\n{supported}\n\n"
+             "Every feature of the tool relies on the memory addresses of one exact version; another "
+             "version has different addresses. To get this version supported, send its SHA-256 above "
+             "to the author.")
     say(text)
     root = tkinter.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
     try:
-        messagebox.showwarning("不支持的游戏版本", text + "\n\n点“确定”后可以重新选择。", parent=root)
+        messagebox.showwarning(L("不支持的游戏版本", "Unsupported game version"),
+                               text + L("\n\n点“确定”后可以重新选择。", "\n\nPress OK to choose again."), parent=root)
     finally:
         root.destroy()
 
@@ -89,6 +96,7 @@ def locate(game):
     from pe_image import GAME_FILES, choose_game, forget, remember
     filename = GAME_FILES[game][0]
     expected = next(p for p in watch_launch.profiles() if p["game"] == game)["sha256"]
+    again = L(f"请重新选择 {filename}（{LABELS[game]}）", f"Please select {filename} again ({LABELS[game]})")
     path = watch_launch.find_game(game)
     if path.is_file():
         digest = fingerprint(path)
@@ -96,21 +104,22 @@ def locate(game):
             return path
         forget(game)
         refuse(path, digest, game)
-        title = f"请重新选择 {filename}（{LABELS[game]}）"
+        title = again
     else:
-        say(f"没有找到{LABELS[game]}，请在弹出的窗口里选择 {filename}…")
-        title = f"找不到游戏，请选择 {filename}（{LABELS[game]}）"
+        say(L(f"没有找到{LABELS[game]}，请在弹出的窗口里选择 {filename}…",
+              f"{LABELS[game]} not found, please select {filename} in the window that opens…"))
+        title = L(f"找不到游戏，请选择 {filename}（{LABELS[game]}）", f"Game not found, please select {filename} ({LABELS[game]})")
     while True:
         picked = choose_game(game, title)
         if picked is None:
-            raise RuntimeError("没有选择游戏程序")
+            raise RuntimeError(L("没有选择游戏程序", "No game executable selected"))
         digest = fingerprint(picked)
         if digest == expected:
             remember(game, picked)
-            say(f"已记住游戏位置：{picked}")
+            say(L(f"已记住游戏位置：{picked}", f"Game location remembered: {picked}"))
             return picked
         refuse(picked, digest, game)
-        title = f"请重新选择 {filename}（{LABELS[game]}）"
+        title = again
 
 
 def running_games():
@@ -154,8 +163,10 @@ def main():
         # does not survive the tool being removed.
         try:
             if Client(running).call("status").get("mode") != "detached":
-                say(f"游戏已经在运行（PID {running}），工具也已经挂着，什么都不用做。")
-                say("要逐帧操作时，双击 tas_player.bat 打开播放器。")
+                say(L(f"游戏已经在运行（PID {running}），工具也已经挂着，什么都不用做。",
+                      f"The game is already running (PID {running}) with the tool attached, nothing to do."))
+                say(L("要逐帧操作时，双击 tas_player.bat 打开播放器。",
+                      "To go frame by frame, double-click tas_player.bat to open the player."))
                 return 0
         except (OSError, RuntimeError):
             pass
@@ -170,31 +181,40 @@ def main():
         while STATE.exists() and time.monotonic() < deadline:
             time.sleep(.05)
         if STATE.exists():
-            raise RuntimeError("旧服务尚未退出")
+            raise RuntimeError(L("旧服务尚未退出", "The old service has not exited yet"))
     if running is not None and not restart:
-        say(f"游戏已经在运行（PID {running}），不重启它，直接挂上工具。")
-        say("注意：这样启动的游戏没有写入监视，后退每次约 0.2 秒。想要 0.02 秒的快速后退，")
-        say("先关掉游戏，再双击 start_game.bat。")
+        say(L(f"游戏已经在运行（PID {running}），不重启它，直接挂上工具。",
+              f"The game is already running (PID {running}): attaching the tool without restarting it."))
+        say(L("注意：这样启动的游戏没有写入监视，后退每次约 0.2 秒。想要 0.02 秒的快速后退，",
+              "Note: a game started this way has no write watch, so each step back takes about 0.2 s. For"))
+        say(L("先关掉游戏，再双击 start_game.bat。",
+              "0.02 s step backs, close the game and double-click start_game.bat again."))
         pid = running
     else:
         if running is not None:
-            say("正在关闭正在运行的游戏…")
+            say(L("正在关闭正在运行的游戏…", "Closing the running game…"))
         exe = locate(args.game)
         if args.game == "se":
             watch_launch.EXE_PATH = exe
         result = watch_launch.launch(log=say, game=args.game, restart=restart, exe=exe)
         if result["watched"] != len(profile["snapshot"]["slots"]):
-            say("注意：写入监视没有全部打开，后退会用较慢的方式（每次约 0.2 秒）。")
-        say("等待游戏初始化…")
+            say(L("注意：写入监视没有全部打开，后退会用较慢的方式（每次约 0.2 秒）。",
+                  "Note: write watch is not fully on, so step back uses the slower way (about 0.2 s each)."))
+        say(L("等待游戏初始化…", "Waiting for the game to start up…"))
         pid = ready_process(args.game, result["pid"])
     start_service(pid, live=True)
     say("")
-    say("工具已挂上，游戏由你操作。")
+    say(L("工具已挂上，游戏由你操作。", "The tool is attached and you have control of the game."))
     if args.game == "se":
-        say("照常玩，走到想练的地方。切到别的窗口时游戏会原地冻结（不会弹暂停菜单），切回去就继续。")
+        say(L("照常玩，走到想练的地方。切到别的窗口时游戏会原地冻结（不会弹暂停菜单），切回去就继续。",
+              "Play as usual and go where you want to practise. When you switch to another window the game "
+              "freezes in place (no pause menu); switch back and it carries on."))
     else:
-        say("原版已连接，窗口保持实时。用播放器接管后可以逐帧前进和后退。")
-    say("要逐帧操作时，双击 tas_player.bat 打开播放器，或直接按小键盘 +。")
+        say(L("原版已连接，窗口保持实时。用播放器接管后可以逐帧前进和后退。",
+              "The original is attached and keeps running live. Take over in the player to step forward "
+              "and back frame by frame."))
+    say(L("要逐帧操作时，双击 tas_player.bat 打开播放器，或直接按小键盘 +。",
+          "To go frame by frame, double-click tas_player.bat to open the player, or just press numpad +."))
     return 0
 
 
@@ -202,5 +222,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, RuntimeError, TimeoutError) as error:
-        print(f"\n启动失败：{error}", file=sys.stderr, flush=True)
+        print(L(f"\n启动失败：{error}", f"\nStart failed: {error}"), file=sys.stderr, flush=True)
         raise SystemExit(1)

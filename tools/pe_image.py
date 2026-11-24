@@ -11,21 +11,23 @@ APP_ID = "329050"
 CHOSEN = Path(__file__).resolve().parents[1] / "game_path.txt"
 # Where the user said each build's executable is (written by start_game, never published).
 CHOSEN_FILES = {"se": CHOSEN, "dx9": CHOSEN.with_name("game_path_dx9.txt")}
-GAME_FILES = {"se": (GAME, "鬼泣4特别版"), "dx9": ("DevilMayCry4_DX9.exe", "鬼泣4原版 DX9")}
+GAME_FILES = {"se": (GAME, ("鬼泣4特别版", "DMC4 Special Edition")),
+              "dx9": ("DevilMayCry4_DX9.exe", ("鬼泣4原版 DX9", "DMC4 original (DX9)"))}
 
 
 def choose_game(game="se", title=None):
     """Ask the user where the game is (file dialog). None when cancelled; remember() stores the answer."""
     import tkinter
     from tkinter import filedialog
+    from lang import L          # only start_game asks, and it runs with tas\ on the path
     filename, label = GAME_FILES[game]
     root = tkinter.Tk()
     root.withdraw()
     root.attributes("-topmost", True)
     try:
         picked = filedialog.askopenfilename(
-            parent=root, title=title or f"找不到游戏，请选择 {filename}",
-            filetypes=[(label, filename), ("程序", "*.exe")])
+            parent=root, title=title or L(f"找不到游戏，请选择 {filename}", f"Game not found, please select {filename}"),
+            filetypes=[(L(*label), filename), (L("程序", "Programs"), "*.exe")])
     finally:
         root.destroy()
     return Path(picked) if picked else None

@@ -11,6 +11,7 @@ except that stub. The detour is removed again once the arenas exist.
 import argparse
 from hashlib import sha256
 from build_profile import profiles
+from lang import L
 import ctypes as ct
 import os
 import subprocess
@@ -222,10 +223,11 @@ def launch(log=print, game="se", restart=True, exe=None):
     name = profile["process"]
     exe = Path(exe) if exe else (EXE_PATH if game == "se" else find_game(game))
     if not exe.is_file():
-        raise RuntimeError(f"找不到游戏程序：{exe}")
+        raise RuntimeError(L(f"找不到游戏程序：{exe}", f"Game executable not found: {exe}"))
     digest = sha256(exe.read_bytes()).hexdigest()
     if digest != profile["sha256"]:
-        raise RuntimeError(f"不支持这个版本的游戏程序：{exe}\nSHA-256：{digest}")
+        raise RuntimeError(L(f"不支持这个版本的游戏程序：{exe}\nSHA-256：{digest}",
+                             f"This version of the game is not supported: {exe}\nSHA-256: {digest}"))
     app_id = str(profile["steamAppId"])
     layout = profile["snapshot"]
     first_slot = 0x400000 + layout["firstSlot"]
@@ -238,7 +240,8 @@ def launch(log=print, game="se", restart=True, exe=None):
             return False
     if find_pid(name) is not None:
         if not restart:
-            raise RuntimeError("游戏已在启动，请再双击一次 start_game.bat 连接它。")
+            raise RuntimeError(L("游戏已在启动，请再双击一次 start_game.bat 连接它。",
+                                 "The game is already starting: double-click start_game.bat again to attach to it."))
         subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True)
         deadline = time.monotonic() + 15
         while find_pid(name) is not None and time.monotonic() < deadline:
@@ -250,7 +253,7 @@ def launch(log=print, game="se", restart=True, exe=None):
     # 2026-11-18: Steam registers the process, overlay included). This avoids Steam's own launch
     # queue, which can hang on "CheckShaderDepotManifest" when the network is poor, and the process
     # id is known at once, so the write-watch patch is never late.
-    log("正在启动游戏…")
+    log(L("正在启动游戏…", "Starting the game…"))
     try:
         environment = dict(os.environ, SteamAppId=app_id, SteamGameId=app_id)
         # Fully detached: no inherited console or pipe handles, so closing the window that ran this
@@ -264,7 +267,7 @@ def launch(log=print, game="se", restart=True, exe=None):
     except OSError as error:
         if game == "dx9":
             raise
-        log(f"直接启动失败（{error}），改由 Steam 启动…")
+        log(L(f"直接启动失败（{error}），改由 Steam 启动…", f"Direct start failed ({error}), starting through Steam…"))
     if pid is None:
         for attempt in range(4):
             os.startfile(f"steam://rungameid/{app_id}")
@@ -276,7 +279,8 @@ def launch(log=print, game="se", restart=True, exe=None):
             if pid is not None:
                 break
     if pid is None:
-        raise TimeoutError("游戏没有启动起来。请看看 Steam 是否弹了提示框。")
+        raise TimeoutError(L("游戏没有启动起来。请看看 Steam 是否弹了提示框。",
+                             "The game did not start. Check whether Steam is showing a dialog."))
     # The original DX9 build's Steam wrapper can hand a direct start over to Steam: the process we
     # started runs "steam.exe -applaunch" and exits, and Steam starts the game again under a new id
     # (seen 2026-11-23 in Steam's console_log.txt). Follow it to the new process and patch that one.
@@ -290,14 +294,16 @@ def launch(log=print, game="se", restart=True, exe=None):
                 result = {"pid": pid, "watched": 0, "note": "write-watch not installed: the game kept restarting"}
                 break
             relaunches += 1
-            log("游戏被 Steam 重新拉起，正在跟上新的进程…")
+            log(L("游戏被 Steam 重新拉起，正在跟上新的进程…", "Steam restarted the game, following the new process…"))
             new_pid = find_new_pid(name, pid)
             if new_pid is None:
-                raise TimeoutError("游戏被 Steam 重新启动后没有出现新的进程。")
+                raise TimeoutError(L("游戏被 Steam 重新启动后没有出现新的进程。",
+                                     "Steam restarted the game but no new process appeared."))
             pid = new_pid
     if relaunches:
         result["note"] = (result["note"] + f"; followed {relaunches} Steam relaunch(es)").lstrip("; ")
-    log(f"游戏已启动（PID {pid}），带写入监视的内存申请 {result['watched']} 次。{result['note']}")
+    log(L(f"游戏已启动（PID {pid}），带写入监视的内存申请 {result['watched']} 次。{result['note']}",
+          f"Game started (PID {pid}), {result['watched']} memory allocations with write watch. {result['note']}"))
     return result
 
 

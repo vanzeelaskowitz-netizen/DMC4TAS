@@ -12,6 +12,7 @@ from pathlib import Path
 import time
 
 from keycodes import KEY_CODES
+from lang import L
 from record_boot import Recording
 from rollback import describe_state, fingerprint, input_prefix
 from tasctl import ROOT
@@ -30,11 +31,13 @@ def in_room(scene):
 def start(server):
     ctl = server.ctl
     if getattr(server, "take", None):
-        raise RuntimeError("已经在录制了")
+        raise RuntimeError(L("已经在录制了", "Already recording"))
     # Look before touching anything: a refused take must leave the game exactly as it was.
     scene = ctl.rpc.recordscene()["scene"]
     if not in_room(scene) or (getattr(ctl, "build", {}).get("game") == "dx9" and not scene.get("roomClass")):
-        raise RuntimeError("要在能操作角色的地方才能录制（不能在菜单、读盘、过场里）")
+        raise RuntimeError(L("要在能操作角色的地方才能录制（不能在菜单、读盘、过场里）",
+                             "Recording only works where you control the character (not in menus, "
+                             "loading screens or cutscenes)"))
     from service_operations import dispatch, hand_back, new_route
     returned = False
     carried = None
@@ -50,7 +53,9 @@ def start(server):
             frame = ctl.status()["frame"] - old.origin
             text = Path(old.path).read_text(encoding="utf-8-sig") if old.path else ""
             if input_prefix(parse_script(text), frame) != input_prefix(old.timeline, frame):
-                raise RuntimeError("脚本文件和游戏里正在跑的输入不一样（刚改过脚本还没生效？），先让脚本生效再录制")
+                raise RuntimeError(L("脚本文件和游戏里正在跑的输入不一样（刚改过脚本还没生效？），先让脚本生效再录制",
+                                     "The script file differs from the inputs the game is running (an edit "
+                                     "not applied yet?). Let the script apply, then record"))
             carried = {"first": old.checkpoints[0][0], "frame": frame, "script": text, "clean": old.clean,
                        "ticks": getattr(old, "sound_ticks", None)}
         else:
@@ -66,12 +71,14 @@ def start(server):
             ctl.rpc.live(False)
         except Exception:
             pass
-        raise RuntimeError("游戏没能停在帧闸上，录制没有开始。再按一次试试。")
+        raise RuntimeError(L("游戏没能停在帧闸上，录制没有开始。再按一次试试。",
+                             "The game did not stop at the frame gate, recording did not start. Try again."))
     if scene.get("paused"):
         server.route = None
         if dispatch(server, "unpause", {})["paused"]:
             ctl.rpc.live(False)
-            raise RuntimeError("游戏暂停菜单仍然打开，录制没有开始")
+            raise RuntimeError(L("游戏暂停菜单仍然打开，录制没有开始",
+                                 "The game's pause menu is still open, recording did not start"))
     route = new_route(server, sticky=carried is not None)
     if carried:
         route.clean = carried["clean"]
@@ -154,7 +161,7 @@ def stop(server, check=False):
     ctl = server.ctl
     take = getattr(server, "take", None)
     if not take:
-        raise RuntimeError("现在没有在录制")
+        raise RuntimeError(L("现在没有在录制", "Not recording"))
     ctl.rpc.recordfinish()
     deadline = time.monotonic() + 60
     result = None
@@ -165,10 +172,11 @@ def stop(server, check=False):
             time.sleep(.01)
     server.take = None
     if result is None:
-        raise RuntimeError("录制没能在帧边界上结束")
+        raise RuntimeError(L("录制没能在帧边界上结束", "The recording could not end on a frame boundary"))
     rows = take["rows"] + result["rows"]
     if not rows:
-        raise RuntimeError("一帧都没有录到（录制期间游戏窗口一直不在前台？）")
+        raise RuntimeError(L("一帧都没有录到（录制期间游戏窗口一直不在前台？）",
+                             "Not a single frame was recorded (was the game window never in front?)"))
     recording = Recording(take["first"], take["mapping"])
     recording.add(rows)
     timeline = strip_tool_keys(recording.timeline)
@@ -187,13 +195,17 @@ def stop(server, check=False):
               "unmapped": sorted(f"{code:#x}" for code in recording.unmapped),
               "reason": take["reason"] or result.get("reason"), "parked": result["parked"]}
     if not result["parked"]:
-        report["check"] = "录制结束时不在可冻结的房间里，没有做重放核对"
+        report["check"] = L("录制结束时不在可冻结的房间里，没有做重放核对",
+                            "The recording did not end in a room that can be frozen, so it was not verified")
         return report
     if route is None:
-        report["check"] = "场景已变化，录制已保存，起点快照已失效"
+        report["check"] = L("场景已变化，录制已保存，起点快照已失效",
+                            "The scene changed: the recording is saved, its start snapshot is gone")
         return report
     if state["frame"] - route.origin != frames:
-        report["check"] = f"帧数对不上（游戏 {state['frame'] - route.origin}，录到 {frames}），没有做重放核对"
+        report["check"] = L(f"帧数对不上（游戏 {state['frame'] - route.origin}，录到 {frames}），没有做重放核对",
+                            f"Frame counts differ (game {state['frame'] - route.origin}, recorded {frames}), "
+                            "so it was not verified")
         return report
     # The game already is in the state these keys produce: attach them without replaying, and keep
     # this moment. The sound threads ran during the take and are held from here on, so this (and
@@ -208,12 +220,13 @@ def stop(server, check=False):
         ctl.load(timeline, frames)
         route.save(detail=False, clean=True)
     if not check:
-        report["check"] = "没有做重放核对"
+        report["check"] = L("没有做重放核对", "Not verified by replay")
         return report
     try:
         played = fingerprint(describe_state(state["last"]))
     except Exception as error:
-        report["check"] = f"读不到录制结束时的状态（{error}），没有做重放核对"
+        report["check"] = L(f"读不到录制结束时的状态（{error}），没有做重放核对",
+                            f"Cannot read the state at the end of the recording ({error}), so it was not verified")
         return report
     started = time.perf_counter()
     try:
@@ -221,10 +234,12 @@ def stop(server, check=False):
         route.goto(before + frames)       # ... and replay the whole take
         replayed = fingerprint(describe_state(ctl.status()["last"]))
     except Exception as error:
-        report["check"] = f"重放失败：{error}"
+        report["check"] = L(f"重放失败：{error}", f"Replay failed: {error}")
         return report
     report["replay_seconds"] = round(time.perf_counter() - started, 2)
     report["consistent"] = replayed == played
-    report["check"] = "重放结果与你打出来的完全一致" if replayed == played else \
-        "重放结果与你打出来的不一致（录制期间用了鼠标？或换了房间？）"
+    report["check"] = L("重放结果与你打出来的完全一致", "The replay matches what you played exactly") \
+        if replayed == played else L("重放结果与你打出来的不一致（录制期间用了鼠标？或换了房间？）",
+                                     "The replay differs from what you played (mouse used while recording? "
+                                     "room changed?)")
     return report

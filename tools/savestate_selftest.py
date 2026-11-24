@@ -16,12 +16,14 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "tas"), str(ROOT / "work"), str(ROOT / "tools")]
 
+import lang  # noqa: E402
 import rollback  # noqa: E402
 import savestate  # noqa: E402
 import service_operations  # noqa: E402
 import take  # noqa: E402
 import timeline  # noqa: E402
 
+lang.current = lambda: "zh"     # the checks below look for words of the Chinese messages
 
 class Shot:
     def __init__(self, frame):

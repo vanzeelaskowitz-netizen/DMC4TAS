@@ -36,6 +36,8 @@ docs/TOOLS.md
 game_path.txt
 game_path_dx9.txt
 last_game.txt
+# Interface language chosen in start_game.bat
+language.txt
 
 # Launchers for a recorded boot route that is specific to one save file
 boot_to_room.bat

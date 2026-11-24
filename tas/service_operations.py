@@ -3,6 +3,7 @@ from itertools import islice
 import time
 import traceback
 
+from lang import L
 from rollback import Rollback
 from timeline import Timeline, frames, parse_script, read_script
 
@@ -77,8 +78,11 @@ def hand_back(server):
     clean = False
     if ctl.rpc.status().get("soundSticky"):
         if route is None or route.clean is None:
-            raise RuntimeError("做过后退，但找不到声音线程睡下那一刻的存档，声音没法安全恢复。"
-                               "游戏可以继续玩，但切场景会卡住，需要重启游戏。")
+            raise RuntimeError(L("做过后退，但找不到声音线程睡下那一刻的存档，声音没法安全恢复。"
+                                 "游戏可以继续玩，但切场景会卡住，需要重启游戏。",
+                                 "A step back happened, but the state from the moment the sound threads were "
+                                 "put to sleep is missing, so sound cannot be restored safely. You can keep "
+                                 "playing, but a scene change will hang: restart the game."))
         route.return_clean()
         clean = True
     server.route = None
@@ -97,22 +101,28 @@ def audible_start(server, args):
     """
     ctl, route = server.ctl, getattr(server, "route", None)
     if getattr(server, "audible", None):
-        raise RuntimeError("已经在带声音播放了")
+        raise RuntimeError(L("已经在带声音播放了", "Already playing with sound"))
     if route is None or route.origin is None or not route.checkpoints:
-        raise RuntimeError("还没有时间线：先接管游戏、载入脚本")
+        raise RuntimeError(L("还没有时间线：先接管游戏、载入脚本", "No timeline yet: take over the game and load a script"))
     if not ctl.rpc.status()["soundGuard"]:
-        raise RuntimeError("声音保护没有启用，不能带声音播放（特别版默认关闭：它会让“交还操作”崩溃，修好之前先停用）")
+        raise RuntimeError(L("声音保护没有启用，不能带声音播放（特别版默认关闭：它会让“交还操作”崩溃，修好之前先停用）",
+                             "Sound protection is off, so playing with sound is not possible (off by default "
+                             'on the Special Edition: it makes "Hand back" crash, disabled until that is fixed)'))
     if not getattr(route, "sound_guarded", False):
-        raise RuntimeError("这条时间线不能带声音播放：它是读档得到的，或者声音保护是中途才打开的，"
-                           "游戏的声音状态和第 0 帧对不上，放了会崩")
+        raise RuntimeError(L("这条时间线不能带声音播放：它是读档得到的，或者声音保护是中途才打开的，"
+                             "游戏的声音状态和第 0 帧对不上，放了会崩",
+                             "This timeline cannot play with sound: it came from a loaded save state, or sound "
+                             "protection was switched on halfway, so the game's sound no longer matches "
+                             "frame 0 and playing would crash"))
     first = route.checkpoints[0][0]
     if first.frame != route.origin:
-        raise RuntimeError("时间线第 0 帧的存档不在了，不能带声音播放")
+        raise RuntimeError(L("时间线第 0 帧的存档不在了，不能带声音播放",
+                             "The state of the timeline's frame 0 is gone, so it cannot play with sound"))
     timeline = read_timeline(route)
     last = timeline.rows[-1][1] if timeline.rows else 0
     target = min(int(args.get("count") or last), last)
     if target < 1:
-        raise RuntimeError("脚本是空的，没有可播放的帧")
+        raise RuntimeError(L("脚本是空的，没有可播放的帧", "The script is empty, there is nothing to play"))
     route.pause()
     route.running = False
     route.engine.restore(first)
@@ -157,7 +167,8 @@ def new_route(server, sticky=False):
     from rollback import Rollback
     state = server.ctl.rpc.status()
     if state.get("soundSticky") and not sticky:
-        raise RuntimeError("做过后退之后要先“交还操作”，才能开始新的时间线")
+        raise RuntimeError(L("做过后退之后要先“交还操作”，才能开始新的时间线",
+                             'After a step back, press "Hand back" before starting a new timeline'))
     server.route = Rollback(server.ctl)
     # Playing with sound restores the first frame and wakes the sound threads there. That is only
     # safe when the voice guard was on for the whole timeline: with it off, voices the game drops
@@ -248,7 +259,8 @@ def dispatch(server, command, args):
             return take.stop(server, bool(args.get("check", False)))
         return {"take-start": take.start, "take-status": take.status}[command](server)
     if getattr(server, "take", None) and command not in ("record-scene",):
-        raise RuntimeError("正在录制，先停止录制（小键盘 * 或播放器的“停止录制”）")
+        raise RuntimeError(L("正在录制，先停止录制（小键盘 * 或播放器的“停止录制”）",
+                             'Recording is running: stop it first (numpad * or the player\'s "Stop recording")'))
     if command == "attach":
         if ctl.session is None:
             ctl.attach()

@@ -10,6 +10,7 @@ import time
 import frida
 
 from frame_data import enrich
+from lang import L
 
 ROOT = Path(__file__).resolve().parents[1]
 CRASH_LOG = ROOT / "logs" / "game-exception.log"
@@ -139,7 +140,8 @@ class Controller:
                               or (self.build["game"] == "dx9" and state.get("savesLost") and state["mode"] == "observe"), timeout=max(5, n / 10))
         if not state["parked"]:
             self.rpc.drain()
-            raise RuntimeError(f"旧快照已清除（{state['savesLost']}）")
+            raise RuntimeError(L(f"旧快照已清除（{state['savesLost']}）",
+                                 f"Old snapshots were cleared ({state['savesLost']})"))
         rows = self.rpc.drain()
         if len(rows) != n or [row["number"] for row in rows] != list(range(start+1, start+n+1)):
             raise RuntimeError("Unexpected number or sequence of completed frames")

@@ -45,7 +45,10 @@ and the tool drops its snapshots to stay safe. 原版使用时不要最小化游
 ## Use
 
 1. `setup.bat` once, after downloading.
-1. `start_game.bat` starts the game with the tool attached (the player keeps control).
+1. `start_game.bat` first asks for the language (1 English, 2 中文; after 5 s the last choice is
+   kept, stored in `language.txt`), then starts the game with the tool attached (the player keeps
+   control). The player and the script window use that language.
+   启动时先选语言（1 英文，2 中文；5 秒不按就沿用上次的选择），播放器和脚本窗口跟着用这个语言。
 1. In a room with a character, `tas_player.bat` opens the player and the script window.
 1. Take over, record or write a script, step, step back, play; hand control back when done.
 
