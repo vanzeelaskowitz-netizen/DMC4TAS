@@ -40,6 +40,16 @@ class Client:
             raise RuntimeError(f"Service owns game PID {self.pid}, not {pid}")
 
     def call(self, command, **arguments):
+        # A restarted service writes a new address file (new port and token). Follow it, so a
+        # long-lived client such as the player keeps working (it hung after a restart, 2026-11-25).
+        try:
+            if STATE.stat().st_mtime_ns != getattr(self, "seen", None):
+                info = read_state()
+                if info["game_pid"] == self.pid:
+                    self.info = info
+                self.seen = STATE.stat().st_mtime_ns
+        except (OSError, RuntimeError):
+            pass
         request = {"token": self.info["token"], "command": command, "args": arguments}
         with socket.create_connection(("127.0.0.1", self.info["port"]), timeout=3) as conn:
             conn.settimeout(600 if command in ("probe", "accept") else 120)

@@ -57,7 +57,8 @@ def start(server):
                                      "The script file differs from the inputs the game is running (an edit "
                                      "not applied yet?). Let the script apply, then record"))
             carried = {"first": old.checkpoints[0][0], "frame": frame, "script": text, "clean": old.clean,
-                       "ticks": getattr(old, "sound_ticks", None)}
+                       "ticks": getattr(old, "sound_ticks", None),
+                       "guarded": bool(getattr(old, "sound_guarded", False))}
         else:
             # No timeline to continue: go back to the state the sound threads may wake in; the
             # take then starts there, as it always did.
@@ -188,9 +189,10 @@ def stop(server, check=False):
     written = joined(parse_script(carried["script"]), before, timeline) if carried else timeline
     TAKES.mkdir(exist_ok=True)
     path = TAKES / f"take-{datetime.now():%Y%m%d-%H%M%S-%f}.tas"
-    path.write_text(format_frames(written), encoding="utf-8", newline="\n")
-    route = server.route
     state = ctl.status()
+    header = f"# {state.get('frameRate') or 60} fps\n"      # see script_fps() in player.py
+    path.write_text(header + format_frames(written), encoding="utf-8", newline="\n")
+    route = server.route
     report = {"frames": frames, "path": str(path), "file": path.name, "continued": before if carried else None,
               "unmapped": sorted(f"{code:#x}" for code in recording.unmapped),
               "reason": take["reason"] or result.get("reason"), "parked": result["parked"]}
@@ -213,6 +215,9 @@ def stop(server, check=False):
     if carried:
         # Back onto the earlier timeline: its frame 0, the frame the take began on, and now.
         route.adopt(carried["first"], route.checkpoints[0][0], written, str(path))
+        # Frame 0 is the earlier timeline's again (the sound threads slept through the take), so
+        # playing with sound is as safe as it was there; only the take's own start was a restore.
+        route.sound_guarded = carried["guarded"]
         ctl.load(written, before + frames)
         route.save(detail=False)
     else:

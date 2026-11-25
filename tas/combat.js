@@ -221,8 +221,9 @@ const combat = (() => {
             // Nero's Exceed (found 2026-11-21 by pressing the key on every frame after a slash):
             // +0xF2D0 counts up while the EX-Act window of a sword move is open and is 0 otherwise;
             // the key works on exactly the frames that end with it above 0, the first of them is
-            // MAX-Act. +0xF1C8 is the gauge, 0..3.
-            exceed: t.names.includes('uPlayerNero') ? {timer:f32(p,0xf2d0), gauge:u32(p,0xf1c8)} : null,
+            // MAX-Act. The gauge is 0..3. Offsets per build: battle.exceedTimer / exceedGauge.
+            exceed: t.names.includes('uPlayerNero') ?
+                {timer:f32(p,battle.exceedTimer), gauge:u32(p,battle.exceedGauge)} : null,
             buttons:buttons(p,battle.buttons), peripheral:buttons(p,0x1888),
             direction:buttonsDirection(p), motionHitStop:field(p,0x3048,'readU8'),
             hitStopTimer:f32(p,battle.playerStop), frozen:field(p,battle.playerFrozen,'readU8'),

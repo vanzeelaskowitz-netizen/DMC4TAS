@@ -3,6 +3,8 @@ from contextlib import contextmanager
 import ctypes as ct
 from ctypes import wintypes as wt
 from dataclasses import dataclass
+import struct
+import time
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -95,6 +97,19 @@ def thread_ids(pid):
 
 
 class ProcessMemory:
+    # (address of a pointer slot, offset of a CRITICAL_SECTION in the object it points to), set
+    # from the build profile's "locks" by SnapshotEngine. See quiescent().
+    QUIET_LOCKS = []
+
+    def locks_free(self):
+        for slot, offset in self.QUIET_LOCKS:
+            obj = self.u32(slot)
+            if obj:
+                lock, recursion, owner = struct.unpack("<iiI", self.read(obj + offset + 4, 12))
+                if lock != -1 or recursion or owner:
+                    return False
+        return True
+
     def __init__(self, pid, *, write=False):
         if ct.sizeof(ct.c_void_p) != 8:
             raise RuntimeError("Run snapshots with the project's 64-bit Python")
@@ -147,7 +162,17 @@ class ProcessMemory:
             if header[:12] == bytes(12) and size and (size + 15 + PAGE) // PAGE * PAGE == region.end - region.base:
                 blocks.append((region.base + 16, size))
         total = sum(size for _, size in blocks)
-        if total != self.u32(descriptor + 4) or total != self.u32(descriptor + 12):
+        live = self.u32(descriptor + 4)
+        # A block the allocator no longer counts, while its region still exists: a sound thread
+        # allocated it while awake (play with sound) and a restore put the allocator back to before
+        # that (seen 2026-11-25: one 196,561-byte block over). An extra region is harmless to skip;
+        # a missing one is not, so only one block of exactly the surplus is set aside.
+        orphans = [block for block in blocks if block[1] == total - live] if total > live else []
+        if orphans:
+            blocks.remove(orphans[0])
+            total -= orphans[0][1]
+            self.orphan_blocks = getattr(self, "orphan_blocks", []) + [orphans[0]]
+        if total != live or total != self.u32(descriptor + 12):
             raise RuntimeError("DX9 default allocator ownership could not be reconciled")
         return blocks
 
@@ -194,6 +219,25 @@ class ProcessMemory:
         """Suspend the target only while native memory I/O is in progress."""
         # One call for the whole process. Walking the system thread list and suspending the game's
         # ~100 threads one by one cost about 55 ms per snapshot or restore (measured 2026-11-18).
+        # Critical sections that live in snapshotted memory (QUIET_LOCKS) must be free while the
+        # process is held: a thread frozen halfway through EnterCriticalSection/Leave left a lock
+        # "taken, no owner" in a snapshot, and restoring it deadlocked the game thread in the next
+        # frame (DX9 resource lock [0xE552D0]+4, 2026-11-25). Retry until they are free.
+        for attempt in range(500):
+            if nt_suspend(self.handle) != 0:
+                break
+            if self.locks_free():
+                try:
+                    yield 0
+                finally:
+                    if nt_resume(self.handle) != 0:
+                        raise RuntimeError("Failed to resume the game process")
+                return
+            if nt_resume(self.handle) != 0:
+                raise RuntimeError("Failed to resume the game process")
+            time.sleep(.001)
+        else:
+            raise RuntimeError("A game lock stayed busy for 0.5 s; not touching memory now")
         if nt_suspend(self.handle) == 0:
             try:
                 yield 0

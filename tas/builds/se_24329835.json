@@ -13,7 +13,7 @@
     "damageHp": "0x30", "damageMax": "0x34", "damageExtent": "0x34",
     "action": "0x1a00", "enemyAction": 4, "phase": 5, "motion": "0x4e4", "motionFrame": "0x530",
     "playerStop": "0x2448", "enemyStop": "0x1944", "playerFrozen": "0x1531", "enemyFrozen": "0x1948",
-    "buttons": "0x1920", "unitDelta": "0x1c"
+    "buttons": "0x1920", "unitDelta": "0x1c", "exceedTimer": "0xf2d0", "exceedGauge": "0xf1c8"
   },
   "step": {
     "predicate": "0x1eeef0",

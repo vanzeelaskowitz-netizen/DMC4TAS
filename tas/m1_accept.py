@@ -97,10 +97,10 @@ def focus_test_window(hwnd):
     focus(hwnd)
 
 
-def verify_clock(row, prior, frequency, units):
+def verify_clock(row, prior, frequency, units, rate=60):
     ticks = row["qpcTicks"]-prior
-    require(ticks in {frequency//60, (frequency+59)//60}, f"QPC increment {ticks} at frame {row['number']}")
-    require(abs(row["deltaSeconds"]-1/60) <= 1/frequency+1e-8, f"Game delta mismatch: {row}")
+    require(ticks in {frequency//rate, (frequency+rate-1)//rate}, f"QPC increment {ticks} at frame {row['number']}")
+    require(abs(row["deltaSeconds"]-1/rate) <= 1/frequency+1e-8, f"Game delta mismatch: {row}")
     require(abs(row["deltaUnits"]-units) < 0.001, f"Game delta in frame units mismatch: {row}")
     return row["qpcTicks"]
 
@@ -205,7 +205,8 @@ def verify(client, handle, hwnd, expected_foreground, result, build, update=lamb
         result["baseline"] = baseline
         require(int(b["foreground"], 16) == expected_foreground and not is_iconic(hwnd), "Focus baseline failed")
         combat = (b["last"].get("combat") or {}).get("player") is not None
-        units = 1 if combat or build["game"] == "dx9" else b["last"]["deltaUnits"]
+        rate = b.get("frameRate", 60)      # follows the game's Frame Rate setting (agent gameFrameRate)
+        units = 60/rate if combat or build["game"] == "dx9" else b["last"]["deltaUnits"]
         baseline.update(combat=combat, engineUnits=units)
         require(0 < units <= 4, "Invalid engine frame scale")
         require(baseline["entryCount"] == 12 and baseline["presentCount"] >= 12
@@ -247,15 +248,15 @@ def verify(client, handle, hwnd, expected_foreground, result, build, update=lamb
         for _ in range(10):
             row, = advance()
             result["singleSteps"].append(row)
-            prior = verify_clock(row, prior, still["frequency"], units)
+            prior = verify_clock(row, prior, still["frequency"], units, rate)
             verify_iteration(row, hwnd, expected_foreground)
             if build["game"] == "dx9":
                 raw_seconds = fetch(clock+build["clock"]["seconds"],4)
                 raw_units = fetch(clock+build["clock"]["units"],4)
                 row["clockReadback"] = [raw_seconds.hex(),raw_units.hex()]
-                require(raw_seconds == struct.pack("<f",1/60) and raw_units == struct.pack("<f",1),
+                require(raw_seconds == struct.pack("<f",1/rate) and raw_units == struct.pack("<f",60/rate),
                         "Independent engine clock readback failed")
-        print("单步 10 次：每次 +1，读键 1 次，Present 1 次，游戏步长 1/60 秒，PASS")
+        print(f"单步 10 次：每次 +1，读键 1 次，Present 1 次，游戏步长 1/{rate} 秒，PASS")
 
         if build["game"] == "dx9":
             dx9_menu(client, handle, build, result, advance)
@@ -267,7 +268,7 @@ def verify(client, handle, hwnd, expected_foreground, result, build, update=lamb
         for i, held, pressed, released in frames(EXAMPLE+[(9, 10, [])]):
             row, = advance()
             keys = row["keys"]
-            prior = verify_clock(row, prior, still["frequency"], units)
+            prior = verify_clock(row, prior, still["frequency"], units, rate)
             verify_iteration(row, hwnd, expected_foreground)
             names = ("held", "pressed", "released")
             expected = (held, pressed, released)
@@ -289,7 +290,7 @@ def verify(client, handle, hwnd, expected_foreground, result, build, update=lamb
         submitted = resumed["presentCount"]-parked["presentCount"]
         require(submitted >= advanced and (not combat or submitted <= advanced+1), "Present did not recover")
         elapsed_ticks = resumed["last"]["qpcTicks"]-prior
-        require(abs(elapsed_ticks-advanced*still["frequency"]/60) <= 1, "Resume charged paused wall time")
+        require(abs(elapsed_ticks-advanced*still["frequency"]/rate) <= 1, "Resume charged paused wall time")
         require(title(hwnd) == initial, "Window did not respond after resume")
         result["resume"] = {"frames":advanced, "qpcTicks":elapsed_ticks, "state":resumed}
         print(f"恢复：推进 {advanced} 帧，虚拟时钟推进 {elapsed_ticks} ticks，窗口有响应，PASS")

@@ -58,6 +58,7 @@ let clockObject;
 let clockStart = 0;
 let millisStart = 0;
 let ticks = 0;
+let frameRate = 60;             // see gameFrameRate()
 let virtual = false;
 let targetWall = 0;       // next frame release time in real QPC ticks; 0 = resynchronise
 let recordEverywhere = false; // test only: virtual clock outside gameplay scenes too
@@ -71,6 +72,7 @@ let savesScene = null;
 let savesLost = null;           // why they were dropped, for the service to report
 let soundTicks = 0;             // times a sound thread body has run; equal ticks = no sound in between
 let soundWorkers = 0;           // DX9: sound thread bodies that can be put to sleep
+let soundFault = null;          // DX9: what a sound worker hit when it faulted (it is skipped after)
 let readCount = 0;
 let testFallback = false;
 let presentCount = 0;
@@ -142,7 +144,40 @@ function pump() {
     }
 }
 
+// Frames per second of the TAS clock. It follows the game's own Frame Rate setting: on the original
+// (DX9) "60 FPS MAX" sets the clock's fixed-step flag and runs at its base rate (+0x38, 60);
+// "VARIABLE" clears it and the engine caps at the display frequency (+0x3C, e.g. 120). The TAS
+// always drives the fixed-step branch (the variable branch spins on the counter until enough time
+// has passed, which virtual time never does inside a frame) and scales its time step to the rate.
+// SE keeps 60 until its clock has been studied.
+function gameFrameRate(clock = clockObject) {
+    if (build.strategy.clock !== 'fixedBranch' || !clock) return 60;
+    const c = build.clock;
+    const rate = clock.add(c.fixedFlag).readU8() ? clock.add(c.baseRate).readFloat() : clock.add(c.maxRate).readFloat();
+    return rate >= 30 && rate <= 240 ? Math.round(rate) : 60;
+}
+
+// Real time between frames while the game runs at its own speed (play, record, play with sound):
+// whether the game keeps up with frameRate. Reset whenever a run with sound starts. A gap longer
+// than 4 periods is a pause, not a slow frame, and starts a new stretch.
+let pace = {frames: 0, sumMs: 0, maxMs: 0, late: 0, rate: 0}, paceLast = 0;
+function notePace(now, period) {
+    if (pace.rate !== frameRate) pace = {frames: 0, sumMs: 0, maxMs: 0, late: 0, rate: frameRate};
+    if (paceLast && now - paceLast <= 4*period) {
+        const ms = (now - paceLast) * 1000 / frequency;
+        pace.frames++;
+        pace.sumMs += ms;
+        pace.maxMs = Math.max(pace.maxMs, ms);
+        if (ms > 1.5 * 1000 / frameRate) pace.late++;
+    }
+    paceLast = now;
+}
+function paceStatus() {
+    return {...pace, avgMs: pace.frames ? pace.sumMs / pace.frames : null};
+}
+
 function setVirtualClock(clock) {
+    frameRate = gameFrameRate(clock);
     clockStart = clock.add(build.clock.previous).readS64().toNumber();
     millisStart = realMillis();
     ticks = 0;
@@ -374,6 +409,11 @@ function releaseFrame(invocation) {
         }
     }
     holdSound(soundAsleep());
+    // A faulted sound worker no longer feeds the DirectSound buffer, which then loops its last
+    // stretch as crackling (2026-11-25): stop it for good once both workers sit in the stub.
+    if (!se && soundFault && !heldMix && soundSettled()) {
+        try { parkMix(); } catch (err) { mixError = String(err); }
+    }
     captureActive();
     const nextScene = scenePointers().join(',');
     if (nextScene !== sceneKey) {
@@ -403,6 +443,11 @@ function releaseFrame(invocation) {
             while (wantsGate() && !expire()) {
                 // The controller may take over while the game sits here: follow the mode.
                 holdSound(soundAsleep());
+                // DX9: with both sound workers asleep the DirectSound buffer would loop its last
+                // stretch (heard after a take stops); stop it now, not only at the next snapshot.
+                if (!se && soundHold && !heldMix && soundSettled()) {
+                    try { parkMix(); } catch (err) { mixError = String(err); }
+                }
                 captureActive();
                 if (Date.now() >= checkAt) {
                     // Re-check the reason for being here: the mode can change while parked (for
@@ -465,7 +510,7 @@ function releaseFrame(invocation) {
         // Pace on the real performance counter: Date.now() has 1 ms steps and Sleep(1) can overshoot,
         // which used to run the game at about 32 frames per second.
         const pacing = mode;
-        const period = frequency/60;
+        const period = frequency/frameRate;
         let now = nowQpc();
         if (targetWall === 0 || now - targetWall > 4*period) targetWall = now;
         while (now < targetWall && mode === pacing && !expire()) {
@@ -478,6 +523,7 @@ function releaseFrame(invocation) {
             releaseFrame(invocation);
             return;
         }
+        notePace(now, period);
         targetWall += period;
     } else {
         if (steps <= 0) {           // paused with nothing to step: must never run a frame
@@ -587,7 +633,7 @@ try {
     attach(address(build.sites.sample), { onEnter() {
         if (current && this.threadId === current.tid) {
             const seconds = this.context.esi.add(build.clock.seconds);
-            if (virtual && build.strategy.clock === 'fixedBranch') seconds.writeFloat(1/60);
+            if (virtual && build.strategy.clock === 'fixedBranch') seconds.writeFloat(1/frameRate);
             current.deltaSeconds = seconds.readFloat();
         }
     } });
@@ -602,8 +648,15 @@ try {
         }});
         attach(address(build.sites.afterClock), {onEnter() {
             if (savedFlag === null || this.threadId !== tid) return;
-            clockObject.add(build.clock.fixedFlag).writeU8(savedFlag);
+            const c = build.clock, base = clockObject.add(c.baseRate).readFloat();
+            clockObject.add(c.fixedFlag).writeU8(savedFlag);
             savedFlag = null;
+            // The fixed branch gives one base-rate frame (1.0 units at 60); a VARIABLE frame at
+            // frameRate is base/frameRate of that, which is what the variable branch computes.
+            if (frameRate !== base && base > 0) {
+                const units = clockObject.add(c.units);
+                units.writeFloat(units.readFloat() * base / frameRate);
+            }
         }});
     }
     const stateCallbacks = {
@@ -659,13 +712,13 @@ try {
         // Scheduling waits use wall time on their own threads.
         if (!virtual || Process.getCurrentThreadId() !== tid) return realQpc(out);
         if (build.strategy.clock === 'fixedBranch') noteClockCall('qpc', this.returnAddress);
-        out.writeS64(int64(clockStart + Math.round(ticks*frequency/60)));
+        out.writeS64(int64(clockStart + Math.round(ticks*frequency/frameRate)));
         return 1;
     });
     replaceImport(millis, 'uint', [], function () {
         if (!virtual || Process.getCurrentThreadId() !== tid) return realMillis();
         if (build.strategy.clock === 'fixedBranch') noteClockCall('millis', this.returnAddress);
-        return (millisStart + Math.floor(ticks*1000/60)) >>> 0;
+        return (millisStart + Math.floor(ticks*1000/frameRate)) >>> 0;
     });
     if (build.strategy.keys === 'keyState') {
         attach(asyncKeys.before, {
@@ -1248,7 +1301,7 @@ if (se) try {
 // Both workers are idle before Stop. The driver can then consume no further
 // samples until we restore the cursor and previous loop/play state.
 let heldMix = null;
-let mixStops = 0, mixRestarts = 0;
+let mixStops = 0, mixRestarts = 0, mixError = null;
 const mixOut = Memory.alloc(8);
 function mixCall(buffer, slot, types, args) {
     const hr = comMethod(buffer, slot, 'int', ['pointer', ...types])(buffer, ...args);
@@ -1269,7 +1322,7 @@ function parkMix() {
     mixStops++;
 }
 function resumeMix() {
-    if (!heldMix) return;
+    if (!heldMix || soundFault) return;     // after a worker fault the buffer stays stopped
     const {buffer, cursor, flags} = heldMix;
     mixCall(buffer, 13, ['uint'], [cursor]);
     if (flags & 1) mixCall(buffer, 12, ['uint','uint','uint'], [0,0,(flags & 4) ? 1 : 0]);
@@ -1405,12 +1458,29 @@ if (!se) {
         const caller = address(build.sites[name + 'Return']);
         const run = new NativeFunction(site, 'void', ['pointer'], 'stdcall');
         Interceptor.replace(site, new NativeCallback(function (obj) {
-            if (soundHold && !stopped && this.returnAddress.equals(caller)) {
+            // The load (streaming) worker also sleeps while a stretch plays with sound: it frees and
+            // allocates buffers in a Windows heap outside every snapshot, so after one playback
+            // frame 0 pointed at freed heap pages and the next playback faulted at a page end
+            // (0x2763f000, 2026-11-25). Effects only, as on SE ("no background music").
+            const held = soundHold || (audible && name === 'soundLoad');
+            if (held && !stopped && this.returnAddress.equals(caller)) {
                 soundIdle[name] = (soundIdle[name] || 0) + 1;
                 return;
             }
+            if (soundFault) {           // a worker faulted: no sound until the game restarts
+                soundIdle[name] = (soundIdle[name] || 0) + 1;   // still counts as idle for snapshots
+                return;
+            }
             soundTicks++;
-            run(obj);
+            try {
+                run(obj);
+            } catch (err) {
+                // 2026-11-25: playing a 120 fps take with sound faulted in here (access violation
+                // at a page boundary) and the uncaught error took the whole agent down, leaving
+                // the game frozen. Keep the game alive and silent, and keep what is known.
+                soundFault = {worker: name, error: String(err), frame, mode, audible, frameRate,
+                              heldMix: !!heldMix, mixStops, mixRestarts, at: Date.now()};
+            }
         }, 'void', ['pointer'], 'stdcall'));
         soundReplaced.push(site);
         soundWorkers++;
@@ -1486,6 +1556,9 @@ function dxBattle(row) {
         player.hp = p.add(field.playerHp).readFloat();
         player.stepCooldown = p.add(field.cooldown).readFloat();
         player.input = [0, 4, 8].map(o => p.add(field.buttons + o).readU32());
+        // Nero's Exceed window timer and gauge, same meaning as in combat.js finish().
+        player.exceed = combat.type(p)?.names.includes('uPlayerNero') ?
+            {timer: p.add(field.exceedTimer).readFloat(), gauge: p.add(field.exceedGauge).readS32()} : null;
     }
     const enemies = [], seen = new Set();
     let e = address(build.roots.unit).readPointer().add(field.enemyLine).readPointer();
@@ -1576,13 +1649,13 @@ function status() {
              // DX9: the game mixes in its own memory into one DirectSound buffer, which is parked
              // with its cursor while the sound threads sleep (parkMix / resumeMix).
              soundGuard: se ? guardVoices && xaudio.ready : soundWorkers === 2,
-             shaderCreates, shaderReuses, mixStops, mixRestarts, mixCursor:heldMix?.cursor, soundIdle, arenas: arenas.length, sound: {ready: xaudio.ready, error: xaudio.error, voices: xaudio.voices.size, created: xaudio.created,
+             shaderCreates, shaderReuses, mixStops, mixRestarts, mixError, soundFault, pace: paceStatus(), mixCursor:heldMix?.cursor, soundIdle, arenas: arenas.length, sound: {ready: xaudio.ready, error: xaudio.error, voices: xaudio.voices.size, created: xaudio.created,
                      destroyCalls: xaudio.destroyCalls, kept: xaudio.kept, drains: xaudio.drains,
                      drainLeft: xaudio.drainLeft, releaseSkipped: xaudio.releaseSkipped, submits: xaudio.submits,
                      reads: xaudio.reads, files: xaudio.files.size, positionsRestored: xaudio.positionsRestored,
                      wakes: xaudio.wakes, purged: xaudio.purged, dirty: soundDirty, held: soundHold},
              mode, parked, stopped, failure, frame, entered, steps, tid, frequency, entryCount, planPosition,
-             readCount, presentCount, pumpCount, pumpMessages, virtual, clockObject: clockObject?.toString(), foreground: foreground().toString(),
+             readCount, presentCount, pumpCount, pumpMessages, virtual, frameRate, gameFrameRate: gameFrameRate(), clockObject: clockObject?.toString(), foreground: foreground().toString(),
              gameWindow: gameWindow().toString(), gameActive: main().add(build.fields.active).readU8(), last };
 }
 
@@ -1679,6 +1752,8 @@ rpc.exports = {
         const was = audible;
         audible = on === true;
         if (audible) {
+            pace = {frames: 0, sumMs: 0, maxMs: 0, late: 0, rate: frameRate};
+            paceLast = 0;
             // File positions are no longer moved here: the streaming thread never runs between the
             // snapshot and this wake, so they cannot have changed, and moving them was one suspect.
             xaudio.wakes++;
@@ -1822,6 +1897,7 @@ rpc.exports = {
             combat.cheatRestored();
             soundSticky = true;
             ({frame, ticks, clockStart, millisStart, last} = saved);
+            frameRate = saved.frameRate || 60;
             entered = frame;
             pending.length = 0;
         }

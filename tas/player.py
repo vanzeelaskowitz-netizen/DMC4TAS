@@ -45,6 +45,16 @@ MAIN_WIDTH, SCRIPT_WIDTH = L(760, 860), L(600, 730)
 BG, PANEL, INK, DIM, ACCENT, WARN = "#14161a", "#1d2026", "#e6e8eb", "#8b93a1", "#5fb3ff", "#ffb454"
 
 
+def script_fps(text):
+    """The frame rate a script was made at, from a "# 120 fps" comment among its first lines
+    (takes write one), or None."""
+    for line in text.splitlines()[:5]:
+        words = line.lstrip("﻿").strip().lstrip("#").split()
+        if line.lstrip("﻿").startswith("#") and len(words) == 2 and words[1] == "fps" and words[0].isdigit():
+            return int(words[0])
+    return None
+
+
 def bits(value, names):
     if not value:
         return "—"
@@ -59,6 +69,7 @@ class Player:
         self.client = None
         self.game = None
         self.legacy = False
+        self.rate = None            # frames per second the TAS runs at (from the service)
         self.path = None
         self.length = 0
         self.playing = False
@@ -381,7 +392,12 @@ class Player:
     # --- numpad hotkeys ------------------------------------------------------------------------
     def listen_hotkeys(self):
         user32 = ctypes.WinDLL("user32", use_last_error=True)
-        registered = [user32.RegisterHotKey(None, ident, 0, key) for ident, key in enumerate(HOTKEYS, 1)]
+        # * (record) and / (play) are toggles: without MOD_NOREPEAT a key held a little too long
+        # repeats, and the repeats queued during the slow take-start stopped the take again and
+        # started a second one (2026-11-25). + and - keep repeating: holding them steps on.
+        MOD_NOREPEAT = 0x4000
+        registered = [user32.RegisterHotKey(None, ident, MOD_NOREPEAT if key in (VK_MULTIPLY, VK_DIVIDE) else 0, key)
+                      for ident, key in enumerate(HOTKEYS, 1)]
         if not all(registered):
             for ident in range(1, len(HOTKEYS) + 1):
                 user32.UnregisterHotKey(None, ident)
@@ -699,10 +715,14 @@ class Player:
                 self.playing = self.sounding = True
                 self.play_target = result["to"]
                 self.set_play_text(L("⏸ 暂停", "⏸ Pause"))
-                self.note(L(f"带声音播放：第 1 帧到第 {result['to']} 帧。带声音只能从时间线的第 1 帧放起；"
-                            "放完或按暂停后游戏回到无声状态。",
-                            f"Playing with sound: frame 1 to frame {result['to']}. Play with sound always starts "
-                            "from frame 1 of the timeline; when it ends or you pause, the game goes silent again."))
+                first = result["from"] + 1
+                self.note(L(f"带声音播放：第 {first} 帧到第 {result['to']} 帧。"
+                            + ("从当前帧接着放；" if result["from"] else "从时间线的第 1 帧放起；")
+                            + "放完或按暂停后游戏回到无声状态。",
+                            f"Playing with sound: frame {first} to frame {result['to']}. "
+                            + ("Playing on from the current frame; " if result["from"] else
+                               "Starting from frame 1 of the timeline; ")
+                            + "when it ends or you pause, the game goes silent again."))
             return
         # Play the script: from the current frame to its last frame at game speed, then stop there.
         # At (or past) the end, play it again from the start. Without a script, just run.
@@ -1098,6 +1118,23 @@ class Player:
             return None
         return ("max" if first else "ex"), False
 
+    def exceed_lines(self, player):
+        """State panel line for Nero's red blade on the current frame (none for other characters)."""
+        exceed = player.get("exceed")
+        if not exceed:
+            return []
+        mark = self.exceed_at(self.frame)
+        text = {None: L("这一帧不在红刀窗口", "not in an Exceed window on this frame"),
+                ("max", False): L("◆ 这一帧是 MAX 点：Q 写在这一行 = 充满 3 格",
+                                  "◆ MAX point on this frame: Q on this row = all 3 bars"),
+                ("ex", False): L("◆ 这一帧在红刀窗口内：Q 写在这一行 = +1 格",
+                                 "◆ inside the Exceed window: Q on this row = +1 bar"),
+                ("max", True): L("★ 这一帧 MAX 红刀成功", "★ MAX Exceed on this frame"),
+                ("ex", True): L("★ 这一帧红刀成功（+1 格）", "★ Exceed on this frame (+1 bar)"),
+                ("rev", True): L("这一帧原地充能满了一格", "Rev filled one bar on this frame")}[mark]
+        return [(L(f"红刀槽 {exceed['gauge']}/3　{text}", f"Exceed gauge {exceed['gauge']}/3  {text}"),
+                 "ok" if mark else None)]
+
     EXCEED_LOOK = {"max": ("#6b5210", "#ffd75a"), "ex": ("#5a1c1c", "#ff8a8a"), "rev": ("#33383f", "#c8ccd2")}
 
     def draw_info(self):
@@ -1384,6 +1421,13 @@ class Player:
         if self.path is None:
             self.file_label.configure(text=L("还没有脚本，直接在下面输入就行", "No script yet: just type below"), fg=DIM)
         else:
+            made = script_fps(self.editor.get("1.0", "end-1c"))
+            if made and self.rate and made != self.rate:
+                self.file_label.configure(
+                    text=L(f"{self.path.name}　共 {self.length} 帧　⚠ 这是 {made} 帧录的，游戏现在是 {self.rate} 帧",
+                           f"{self.path.name}  {self.length} frames  ⚠ made at {made} fps, the game runs {self.rate} fps"),
+                    fg=WARN)
+                return
             self.file_label.configure(text=L(f"{self.path.name}　共 {self.length} 帧　（自动保存）",
                                              f"{self.path.name}  {self.length} frames  (auto-saved)"), fg=INK)
 
@@ -1556,7 +1600,9 @@ class Player:
 
     def set_version(self, game, state):
         reason = None
-        if not state.get("soundGuard"):
+        if state.get("soundFault"):
+            reason = L("声音线程出错，重启游戏前没有声音", "a sound thread faulted: silent until the game restarts")
+        elif not state.get("soundGuard"):
             reason = L("声音保护未启用", "sound guard off")
         elif not state.get("soundRouteReady", True):
             reason = L("当前时间线未保护声音", "timeline unguarded")
@@ -1564,12 +1610,18 @@ class Player:
             self.sound_play.set(False)
         self.sound_button.configure(state="disabled" if reason else "normal",
                                     text=L(f"带音效（{reason}）", f"Sound effects ({reason})") if reason
+                                    else L("播放带音效（无背景音乐）", "Sound effects (no music)") if game == "dx9"
                                     else L("播放带音效（从头放，无背景音乐）", "Sound effects (from start, no music)"))
         legacy = game == "dx9" and state.get("playerProtocol", 0) < 10
-        if self.game == game and self.legacy == legacy:
+        # The rate the TAS runs at: the timeline's while one runs, else what the game's Frame Rate
+        # setting would give (60 FPS MAX -> 60, VARIABLE -> the display frequency).
+        rate = state.get("frameRate") if state.get("virtual") else state.get("gameFrameRate")
+        if self.game == game and self.legacy == legacy and self.rate == rate:
             return
-        self.game, self.legacy = game, legacy
+        self.game, self.legacy, self.rate = game, legacy, rate
+        self.show_file()
         self.root.title(L("DMC4 逐帧播放器 · ", "DMC4 Frame Player · ") + LABELS[game] +
+                        (L(f" · {rate} 帧", f" · {rate} fps") if rate else "") +
                         (L("（旧服务，重新启动游戏后可录制和存读档）",
                            " (old service: restart the game to record and use save states)") if legacy else ""))
         for button in (self.record_button, self.check_button, self.save_button, self.state_button):
@@ -1607,6 +1659,7 @@ class Player:
                                 f"　角色输入更新 {len(combat['inputUpdates'])} 次　生命 {player['hp']:.0f}",
                                 f"Action {player['action']}  motion {player['motion']} @ {player['motionFrame']:.1f}"
                                 f"  input updates {len(combat['inputUpdates'])}  HP {player['hp']:.0f}"), None))
+                lines.extend(self.exceed_lines(player))
                 lines.append((L("位置 ({:.0f}, {:.0f}, {:.0f})", "Position ({:.0f}, {:.0f}, {:.0f})")
                               .format(*player["position"]), "dim"))
         elif not player:
@@ -1629,19 +1682,7 @@ class Player:
                             f"Action {player['action']}  motion {player['motion']} @ {player['motionFrame']:.1f}  "
                             f"{'grounded' if player['grounded'] else 'airborne'}  "
                             f"step cooldown {player['stepCooldown']:.0f}  HP {player['hp']:.0f}"), None))
-            exceed = player.get("exceed")
-            if exceed:
-                mark = self.exceed_at(self.frame)
-                text = {None: L("这一帧不在红刀窗口", "not in an Exceed window on this frame"),
-                        ("max", False): L("◆ 这一帧是 MAX 点：Q 写在这一行 = 充满 3 格",
-                                          "◆ MAX point on this frame: Q on this row = all 3 bars"),
-                        ("ex", False): L("◆ 这一帧在红刀窗口内：Q 写在这一行 = +1 格",
-                                         "◆ inside the Exceed window: Q on this row = +1 bar"),
-                        ("max", True): L("★ 这一帧 MAX 红刀成功", "★ MAX Exceed on this frame"),
-                        ("ex", True): L("★ 这一帧红刀成功（+1 格）", "★ Exceed on this frame (+1 bar)"),
-                        ("rev", True): L("这一帧原地充能满了一格", "Rev filled one bar on this frame")}[mark]
-                lines.append((L(f"红刀槽 {exceed['gauge']}/3　{text}", f"Exceed gauge {exceed['gauge']}/3  {text}"),
-                              "ok" if mark else None))
+            lines.extend(self.exceed_lines(player))
             x, y, z = player["position"]
             step = player.get('workDelta') or 0
             lines.append((L(f"位置 ({x:.0f}, {y:.0f}, {z:.0f})　每帧推进 {step:.2f} 单位",

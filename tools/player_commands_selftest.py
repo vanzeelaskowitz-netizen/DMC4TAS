@@ -154,8 +154,10 @@ def main():
     for game in ("se", "dx9"):
         ui = SimpleNamespace(root=Mock(), game=None, sound_play=Mock(), overlay_var=Mock(), overlay=Mock(),
                              overlay_button=Mock(), sound_button=Mock(), record_button=Mock(),
-                             check_button=Mock(), save_button=Mock(), state_button=Mock())
-        Player.set_version(ui, game, {"soundGuard": True, "playerProtocol": 10})
+                             check_button=Mock(), save_button=Mock(), state_button=Mock(),
+                             rate=None, show_file=Mock())
+        Player.set_version(ui, game, {"soundGuard": True, "playerProtocol": 10, "gameFrameRate": 120})
+        check("120" in ui.root.title.call_args.args[0], f"{game}: frame rate in the title")
         sound = ui.sound_button.configure.call_args.kwargs["state"] == "normal"
         check(sound, f"{game}: sound checkbox")
         check(not ui.overlay_button.configure.called, f"{game}: F6 stays enabled")

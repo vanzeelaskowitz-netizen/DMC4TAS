@@ -87,7 +87,9 @@
     "accum": "0x48",
     "deadline": "0x50",
     "units": "0x68",
-    "fixedFlag": "0x40"
+    "fixedFlag": "0x40",
+    "baseRate": "0x38",
+    "maxRate": "0x3c"
   },
   "fields": {
     "active": "0x20",
@@ -172,6 +174,7 @@
       10780024
     ],
     "descriptorSize": 640,
+    "locks": [["0xa552d0", 4]],
     "vt": 8383204,
     "low": 52,
     "singletons": [
@@ -217,7 +220,8 @@
     "damageVtableRva": "0x7c7cac", "damageOffsets": [5376, 5380, 5392, 5404, 5420, 9136, 9472, 12932, 32708],
     "damageHp": 24, "damageMax": 28, "damageExtent": "0x34",
     "cooldown": 8180,
-    "buttons": 5132
+    "buttons": 5132,
+    "exceedTimer": 52668, "exceedGauge": 52456
   },
   "practice": {
     "missionElapsed": "0x164",

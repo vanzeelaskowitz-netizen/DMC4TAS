@@ -18,7 +18,7 @@ GAP = 8 * PAGE       # tracked restore: stretches closer than this are written a
 DENSE_INTERVAL = 4   # with page tracking: checkpoint spacing while stepping near the target
 DENSE_SPAN = 120     # ... within this many frames of the target (one whole coarse interval)
 DENSE_LIMIT = 160    # most recently made checkpoints kept regardless of the coarse grid
-CLOCK_KEYS = ("frame", "ticks", "clockStart", "millisStart", "last")
+CLOCK_KEYS = ("frame", "ticks", "clockStart", "millisStart", "last", "frameRate")
 DEFAULT_PROFILE = "fields"
 # What save / back / goto use. Only the whole-heap snapshot replays deterministically (2026-11-18).
 ROUTE_PROFILE = "heaps"
@@ -324,6 +324,9 @@ class SnapshotEngine:
     def __init__(self, controller, profile=DEFAULT_PROFILE):
         self.controller = controller
         self.profile = profile
+        build = getattr(controller, "build", None) or {}
+        ProcessMemory.QUIET_LOCKS = [(0x400000 + int(slot, 16), offset)
+                                     for slot, offset in build.get("snapshot", {}).get("locks", [])]
 
     # ----- page tracking ------------------------------------------------------------------------
     # With write watch (see watch_launch.py) the engine keeps `live`: for every span, the pages of

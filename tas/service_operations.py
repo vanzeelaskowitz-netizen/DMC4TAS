@@ -4,7 +4,7 @@ import time
 import traceback
 
 from lang import L
-from rollback import Rollback
+from rollback import Rollback, input_prefix
 from timeline import Timeline, frames, parse_script, read_script
 
 
@@ -125,13 +125,22 @@ def audible_start(server, args):
         raise RuntimeError(L("脚本是空的，没有可播放的帧", "The script is empty, there is nothing to play"))
     route.pause()
     route.running = False
-    route.engine.restore(first)
-    ctl.load(timeline, 0)
-    route.timeline = timeline
+    # DX9 plays on from the frame the game is on. Only the mixer wakes there (the load thread
+    # sleeps through every playback, see agent.js), and it has slept since frame 0 on this silent
+    # timeline, so every silent frame is as good a place to wake it as frame 0. SE starts at
+    # frame 0: its XAudio2 voices are only drained to frame 0's state.
+    current = ctl.status()["frame"] - route.origin
+    start = current if ctl.build["game"] == "dx9" and 0 < current < target else 0
+    if start:
+        route.goto(start)                 # applies a script edit, else stays put
+    else:
+        route.engine.restore(first)
+        ctl.load(timeline, 0)
+        route.timeline = timeline
     ctl.rpc.audible(True)
     ctl.resume(route.origin + target)
     server.audible = {"target": target}
-    return {"from": 0, "to": target}
+    return {"from": start, "to": target}
 
 
 def read_timeline(route):
@@ -152,9 +161,24 @@ def audible_finish(server, stop=False):
     ctl.rpc.audible(False)
     if state["mode"] == "observe":
         return None                     # the game let go by itself (a door, a loading screen)
+    if ctl.build["game"] == "dx9":
+        # The sound threads ran during this stretch: they read files and filled stream buffers
+        # outside every snapshot. The state they fall asleep in now is the only one they may wake
+        # in later; the older clean state made the load thread fault on hand back (2026-11-25,
+        # access violation at a page end). capture() waits until both workers idle in the stub.
+        route.clean = route.engine.capture()
     reached = max(0, state["frame"] - route.origin)
-    # One frame back and forward again forces a restore: the memory left by the run with sound
-    # differs from the silent one in everything the sound threads touched.
+    # The memory left by the run with sound differs from the silent one in everything the sound
+    # threads touched, so the frame reached must come from a snapshot. When one was kept for exactly
+    # that frame (a take keeps its last frame), restore it: going one frame back first replayed the
+    # whole script from frame 0 without sound, which looked like a second playback (2026-11-25).
+    timeline = read_timeline(route)
+    exact = [item for item, prefix in route.checkpoints if item.frame == state["frame"]
+             and prefix == input_prefix(timeline, reached)]
+    if exact:
+        route.engine.restore(exact[0])
+        return route.goto(reached)
+    # Otherwise one frame back and forward again forces a restore from the nearest earlier one.
     if reached > 0:
         route.goto(reached - 1)
     return route.goto(reached)
