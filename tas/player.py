@@ -162,7 +162,7 @@ class Player:
 
         # The bottom lines are packed first so the state panel gets what is left.
         tk.Label(root, text=L("本窗口内：← → 前后一帧   Shift+← → 十帧   空格 播放/暂停   Home 回起点   "
-                              "接管期间游戏没有声音（脚本窗口勾“播放带声音”后，播放时有）",
+                              "接管期间游戏没有声音（脚本窗口勾“播放带音效”后，播放时有）",
                               "This window: ← → 1 frame   Shift+← → 10 frames   Space play/pause   Home start   "
                               'Game is silent while taken over (see "Sound effects")'), bg=BG, fg=DIM,
                  font=("Microsoft YaHei UI", 9), anchor="w").pack(side="bottom", fill="x", padx=14, pady=(0, 10))
@@ -600,9 +600,13 @@ class Player:
                         "has to, so sound comes back and scene changes don't hang). "
                         "The script stays; the next take over starts it again from row 1."))
         else:
-            self.note(L("操作已交还。点游戏窗口继续玩；切到别的窗口时游戏会自动冻结。脚本留着，下次接管从第 1 行重新开始。",
-                        "Handed back. Click the game window to play on; the game freezes by itself when you switch "
-                        "to another window. The script stays; the next take over starts it again from row 1."))
+            # Only the Special Edition is frozen by the agent when its window loses the focus.
+            se = self.game == "se"
+            self.note(L(f"操作已交还。点游戏窗口继续玩{'；切到别的窗口时游戏会自动冻结' if se else ''}。"
+                        "脚本留着，下次接管从第 1 行重新开始。",
+                        f"Handed back. Click the game window to play on"
+                        f"{'; the game freezes by itself when you switch to another window' if se else ''}. "
+                        "The script stays; the next take over starts it again from row 1."))
 
     def toggle_control(self):
         try:

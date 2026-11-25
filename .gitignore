@@ -20,7 +20,6 @@ runs/*
 !runs/sample.tas
 !runs/demo.tas
 !runs/streak-example.tas
-!runs/redblade-demo.tas
 !runs/fight-probe.tas
 !runs/dx9-exceed-demo.tas
 

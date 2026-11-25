@@ -213,8 +213,8 @@ def main():
         say(L("原版已连接，窗口保持实时。用播放器接管后可以逐帧前进和后退。",
               "The original is attached and keeps running live. Take over in the player to step forward "
               "and back frame by frame."))
-    say(L("要逐帧操作时，双击 tas_player.bat 打开播放器，或直接按小键盘 +。",
-          "To go frame by frame, double-click tas_player.bat to open the player, or just press numpad +."))
+    say(L("要逐帧操作时，双击 tas_player.bat 打开播放器（小键盘 + - * / 在播放器开着时有效）。",
+          "To go frame by frame, double-click tas_player.bat to open the player (numpad + - * / work while it is open)."))
     return 0
 
 

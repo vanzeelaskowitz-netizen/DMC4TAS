@@ -44,6 +44,12 @@ and the tool drops its snapshots to stay safe. 原版使用时不要最小化游
 
 ## Use
 
+**Step-by-step guide with tutorials:** [English](docs/USAGE_EN.md) · [中文使用教程](docs/USAGE.md)
+
+Quick start:
+
+1. Put the game in windowed mode, and note which keyboard key each action is bound to: scripts are
+   written with keyboard keys (`Space J` = the keys bound to lock-on and sword, for example).
 1. `setup.bat` once, after downloading.
 1. `start_game.bat` first asks for the language (1 English, 2 中文; after 5 s the last choice is
    kept, stored in `language.txt`), then starts the game with the tool attached (the player keeps
@@ -52,9 +58,7 @@ and the tool drops its snapshots to stay safe. 原版使用时不要最小化游
 1. In a room with a character, `tas_player.bat` opens the player and the script window.
 1. Take over, record or write a script, step, step back, play; hand control back when done.
 
-Full guide (Chinese): [docs/USAGE.md](docs/USAGE.md) · 使用说明见 [docs/USAGE.md](docs/USAGE.md)
-
-Script format: see `docs/SCRIPT.md`. Memory maps: `docs/MAP.md` (Special Edition), `docs/MAP_DX9.md` (original).
+Script format: see `docs/SCRIPT.md` (Chinese; the guide has a short English summary). Memory maps: `docs/MAP.md` (Special Edition), `docs/MAP_DX9.md` (original).
 
 ### Decompiled functions / 反编译函数
 
