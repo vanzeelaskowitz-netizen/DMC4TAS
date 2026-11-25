@@ -13,6 +13,7 @@ from tasctl import ROOT, start_service, target_pid
 from keycodes import KEY_CODES, KeyCodes
 from lang import L
 from rollback_memory import ProcessMemory
+from pad import tokens as pad_tokens
 from timeline import Timeline, format_script, parse_script
 from window_mode import require_windowed
 
@@ -190,7 +191,7 @@ class Recording:
             self.count += 1
             if row["frame"] != self.first_frame + self.count - 1:
                 raise RuntimeError(f"录制帧不连续，收到游戏帧 {row['frame']}。")
-            held = self.keys(row["held"])
+            held = self.keys(row["held"]) | pad_tokens(row.get("pad"))
             scene = row["scene"]
             if self.timeline.rows and self.timeline.rows[-1][2] == held:
                 start, _, keys = self.timeline.rows[-1]

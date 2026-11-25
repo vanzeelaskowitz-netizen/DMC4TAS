@@ -42,7 +42,8 @@
     "unit": "0xa552cc",
     "clock": "0xa5574c",
     "hwnd": "0xa55754",
-    "sound": "0xa559d8"
+    "sound": "0xa559d8",
+    "collision": "0xa559d0"
   },
   "sites": {
     "keySampler": "0x4e08b0",
@@ -71,7 +72,9 @@
     "verticesLocked": "0x4f64c9",
     "indicesLocked": "0x4f64df",
     "beforeUnlock": "0x4f6c13",
-    "resetPending": "0x4f0fc0"
+    "resetPending": "0x4f0fc0",
+    "padMove": "0x85050",
+    "groundCast": "0x55b320"
   },
   "imports": {
     "qpc": "0x78516c",
@@ -156,8 +159,11 @@
     "verticesLocked": "894424308b83",
     "indicesLocked": "894424488b83",
     "beforeUnlock": "8b834c590100",
-    "resetPending": "558bec83e4f8"
+    "resetPending": "558bec83e4f8",
+    "padMove": "558bec83e4f8",
+    "groundCast": "558bec83e4f0"
   },
+  "pad": {"info": 1488, "pads": 52, "padSize": 704, "user": 2512, "triggerFree": 21, "stickFree": 22, "buttons": 62463},
   "snapshot": {
     "dataRva": 8519680,
     "dataSize": 2697576,
@@ -221,8 +227,10 @@
     "damageHp": 24, "damageMax": 28, "damageExtent": "0x34",
     "cooldown": 8180,
     "buttons": 5132,
-    "exceedTimer": 52668, "exceedGauge": 52456
+    "exceedTimer": 52668, "exceedGauge": 52456,
+    "groundHit": 8200, "groundPoint": 8304, "collision": 7820, "landed": 28, "collisionVtable": "0x7c78e0"
   },
+  "enemyGround": {"filter": 526336, "above": 100, "below": 10000},
   "practice": {
     "missionElapsed": "0x164",
     "palaceRemaining": "0x250",

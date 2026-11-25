@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from dump_memory import export
 from build_profile import identify, profiles
 from keycodes import KEY_CODES
-from timeline import validate_mapping
+from timeline import validate_mapping, wire_keys
 from window_mode import require_windowed
 
 
@@ -111,8 +111,7 @@ class Controller:
         bindings = KEY_CODES | timeline.bindings
         used = {name for _, _, keys in timeline.rows for name in keys}
         observed = sorted(bindings, key=lambda name: (name in used, name))
-        rows = [{"count": end-start+1, "keys": [timeline.codes(name) for name in keys]}
-                for start, end, keys in timeline.rows]
+        rows = [{"count": end-start+1, **wire_keys(timeline, keys)} for start, end, keys in timeline.rows]
         return self.rpc.load([(name, *bindings[name]) for name in observed], rows, position)
 
     @contextmanager

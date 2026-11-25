@@ -84,7 +84,19 @@ let planPosition = 0;
 let planRange = 0;
 const pending = [];
 const blank = new Uint8Array(256);
-const emptyInput = { di: blank, vk: blank };
+const emptyInput = { di: blank, vk: blank, pad: null };
+// One frame of a script: keyboard buffers for both read paths, and the pad state
+// [buttons, lx, ly, rx, ry, lt, rt] (work\pad.py) or null for a pad at rest.
+function frameInput(row) {
+    const di = new Uint8Array(256);
+    const vk = new Uint8Array(256);
+    for (const [scan, key] of row.keys) {
+        di[scan] = 0x80;
+        vk[key] = 0x80;
+        if (key >= 0xa0 && key <= 0xa5) vk[[0x10, 0x11, 0x12][(key-0xa0) >> 1]] = 0x80;
+    }
+    return { di, vk, pad: row.pad || null };
+}
 const nowQpc = () => {
     realQpc(counterBuffer);
     return counterBuffer.readS64().toNumber();
@@ -695,6 +707,61 @@ try {
         if (build.strategy.keys === 'keyState') observeDeviceMethod(table, 25, pollCallbacks);
     }
     observeDevice(device);
+    if (build.pad) {
+        // DX9 gamepad (docs\MAP_DX9.md). sDevil4Pad::move fills its first cPadInfo once per frame,
+        // and the player and menus read only that. While recording it is read back for the take;
+        // in every other frame the tool holds, the script's pad state replaces it (a frame without
+        // pad tokens is a pad at rest), so a connected pad cannot leak into a replay. The trigger
+        // and stick-direction bits are derived from the pad's own dead zones, as the game does.
+        // Edges compare with the value from before move(), which lies in snapshotted memory and
+        // so stays right after a step back.
+        const P = build.pad;
+        const press = [[0x34, 0x10], [0x38, 0x20], [0x3c, 0x40], [0x40, 0x80], [0x44, 0x1000], [0x48, 0x2000],
+                       [0x4c, 0x4000], [0x50, 0x8000], [0x54, 0x100], [0x5c, 0x200], [0x64, 0x1], [0x68, 0x2], [0x6c, 0x4]];
+        attach(address(build.sites.padMove), {
+            onEnter() {
+                this.owner = current && this.threadId === current.tid ? current : null;
+                if (!this.owner) return;
+                this.pad = this.context.ecx;
+                this.before = this.pad.add(P.info + 0x14).readU32();
+            },
+            onLeave() {
+                const owner = this.owner;
+                if (!owner) return;
+                const info = this.pad.add(P.info);
+                if (owner.nativeInput) {
+                    const pad = [info.add(0x14).readU32() & P.buttons,
+                                 ...[0x24, 0x28, 0x2c, 0x30, 0x58, 0x60].map(o => info.add(o).readFloat())];
+                    owner.pad = pad.some(v => v) ? pad : null;
+                    return;
+                }
+                const [buttons, lx, ly, rx, ry, lt, rt] = owner.input.pad || [0, 0, 0, 0, 0, 0, 0];
+                const user = this.pad.add(P.user).readU32();
+                const device = this.pad.add(P.pads + P.padSize*(user < 2 ? user : 0));
+                const triggerFree = device.add(P.triggerFree).readU8(), stickFree = device.add(P.stickFree).readS16();
+                let on = buttons;
+                if (Math.round(lt*255) > triggerFree) on |= 0x400;
+                if (Math.round(rt*255) > triggerFree) on |= 0x800;
+                for (const [value, plus, minus] of [[ly, 0x10000, 0x40000], [lx, 0x20000, 0x80000],
+                                                    [ry, 0x100000, 0x400000], [rx, 0x200000, 0x800000]]) {
+                    const raw = Math.round(value*32767);
+                    if (raw > stickFree) on |= plus;
+                    if (raw < -stickFree) on |= minus;
+                }
+                const before = this.before, pressed = (on & ~before) >>> 0;
+                info.add(0x14).writeU32(on >>> 0);
+                info.add(0x18).writeU32(pressed);
+                info.add(0x1c).writeU32((before & ~on) >>> 0);
+                info.add(0x20).writeU32(pressed);           // auto-repeat: only the press itself
+                [lx, ly, rx, ry].forEach((value, i) => info.add(0x24 + 4*i).writeFloat(value));
+                for (const [offset, bit] of press) info.add(offset).writeFloat(on & bit ? 1 : 0);
+                info.add(0x58).writeFloat(lt);
+                info.add(0x60).writeFloat(rt);
+                for (let offset = 0x70; offset < 0x80; offset += 4) info.add(offset).writeFloat(0);
+                owner.pad = owner.input.pad;
+            }
+        });
+    }
     attach(swapChain.readPointer().add(build.fields.presentSlot*4).readPointer(), {
         onEnter(args) {
             if (!args[0].equals(swapChain)) return;
@@ -793,7 +860,7 @@ try {
                 frame++;
                 if (scene && recording) {
                     recording.rows.push({
-                        frame, scene, held: row.keys.held, heldBits: row.keys.heldBits,
+                        frame, scene, held: row.keys.held, heldBits: row.keys.heldBits, pad: row.pad ?? null,
                         nativeInput: row.nativeInput, inputResult: row.nativeInputResult,
                         reads: row.reads, qpcTicks: row.qpcTicks, deltaSeconds: row.deltaSeconds,
                         virtualClock: row.virtualClock, deltaUnits: row.deltaUnits,
@@ -1539,6 +1606,61 @@ function invalidateDevice(reason) {
         leaveForScene(reason);
     }
 }
+// DX9 enemies keep no ground result of their own, so the floor under each one is found with the
+// game's line cast sDevil4Collision::findIntersection (as dmc4_hook's Collision.cpp calls it:
+// CollParam in EAX; instance, segment, both sides, hit out on the stack; callee pops 16 bytes).
+// The stub keeps ESI, which the cast uses for its own query.
+const groundRay = build.enemyGround && (() => {
+    const g = build.enemyGround;
+    const stub = Memory.alloc(Process.pageSize);
+    Memory.patchCode(stub, 64, code => {
+        const w = new X86Writer(code, {pc: stub});
+        w.putPushReg('ebp');
+        w.putMovRegReg('ebp', 'esp');
+        w.putPushReg('esi');
+        for (const offset of [0x18, 0x14, 0x10, 0x0c]) {
+            w.putMovRegRegOffsetPtr('ecx', 'ebp', offset);
+            w.putPushReg('ecx');
+        }
+        w.putMovRegRegOffsetPtr('eax', 'ebp', 8);
+        w.putCallAddress(address(build.sites.groundCast));
+        w.putPopReg('esi');
+        w.putPopReg('ebp');
+        w.putRet();
+        w.flush();
+    });
+    const cast = new NativeFunction(stub, 'uint8', ['pointer', 'pointer', 'pointer', 'int', 'pointer']);
+    const param = Memory.alloc(0x50), segment = Memory.alloc(0x20), hit = Memory.alloc(0x90);
+    param.writeS32(127);                                  // line query: every .sbc kind
+    param.add(4).writeU32(g.filter);
+    param.add(0x18).writeS32(-1);                         // no excluded handles
+    param.add(0x1c).writeS32(-1);
+    param.add(0x24).writeS32(10);
+    param.add(0x28).writeU8(1);
+    param.add(0x2a).writeU8(1);
+    param.add(0x2c).writeFloat(3.4028234663852886e38);
+    param.add(0x30).writeFloat(3.4028234663852886e38);
+    return ([x, y, z]) => {
+        const world = address(build.roots.collision).readPointer();
+        if (world.isNull()) return null;
+        [x, y + g.above, z, 0, x, y - g.below, z, 0].forEach((v, i) => segment.add(4*i).writeFloat(v));
+        return cast(param, world, segment, 0, hit) ? hit.add(0x64).readFloat() : null;
+    };
+})();
+// The enemy's own uCollisionMgr is embedded at an offset that depends on the enemy class (0x1600 for
+// uEm001, see dmc4_hook EnemyTracker.cpp); found once per class by its vtable.
+const enemyCollision = new Map();
+function enemyLanded(e, type) {
+    const name = type.names[0];
+    if (!enemyCollision.has(name)) {
+        const words = new Uint32Array(e.readByteArray(Math.min(type.size, 0x10000) & ~3));
+        const vtable = address(build.battle.collisionVtable).toUInt32();
+        const at = words.findIndex(w => w === vtable);
+        enemyCollision.set(name, at < 0 ? null : 4*at);
+    }
+    const offset = enemyCollision.get(name);
+    return offset === null ? null : e.add(offset + build.battle.landed).readU8() === 1;
+}
 function dxBattle(row) {
     const field = build.battle;
     const p = address(build.roots.mediator).readPointer().add(build.scene.player).readPointer();
@@ -1559,6 +1681,11 @@ function dxBattle(row) {
         // Nero's Exceed window timer and gauge, same meaning as in combat.js finish().
         player.exceed = combat.type(p)?.names.includes('uPlayerNero') ?
             {timer: p.add(field.exceedTimer).readFloat(), gauge: p.add(field.exceedGauge).readS32()} : null;
+        // The game casts a ray from Y+100 down to Y-100 at the start of each player update and keeps
+        // the hit (docs\MAP_DX9.md). Null when no floor lies within that range.
+        player.ground = p.add(field.groundHit).readU32() ? p.add(field.groundPoint + 4).readFloat() : null;
+        const collision = p.add(field.collision).readPointer();
+        player.landed = collision.isNull() ? null : collision.add(field.landed).readU8() === 1;
     }
     const enemies = [], seen = new Set();
     let e = address(build.roots.unit).readPointer().add(field.enemyLine).readPointer();
@@ -1571,6 +1698,8 @@ function dxBattle(row) {
             item.distance = player ? Math.hypot(...item.position.map((v, i) => v - player.position[i])) : null;
             const damage = combat.damageOffset(e,type);
             item.hp = damage === null ? null : e.add(damage + field.damageHp).readFloat();
+            item.landed = enemyLanded(e, type);
+            if (row && groundRay) item.ground = groundRay(item.position);
             if (row) Object.assign(item,combat.dxEnemy(e,player?.position));
             enemies.push(item);
         }
@@ -1684,15 +1813,8 @@ rpc.exports = {
         keyMap = bindings;
         let end = 0;
         plan = ranges.map(range => {
-            const di = new Uint8Array(256);
-            const vk = new Uint8Array(256);
-            for (const [scan, key] of range.keys) {
-                di[scan] = 0x80;
-                vk[key] = 0x80;
-                if (key >= 0xa0 && key <= 0xa5) vk[[0x10, 0x11, 0x12][(key-0xa0) >> 1]] = 0x80;
-            }
             end += range.count;
-            return { end, input: { di, vk } };
+            return { end, input: frameInput(range) };
         });
         planPosition = Math.min(end, position);
         planRange = plan.findIndex(range => range.end > planPosition);
@@ -1770,15 +1892,8 @@ rpc.exports = {
         const built = segments.map(segment => {
             let end = 0;
             const rows = segment.rows.map(row => {
-                const di = new Uint8Array(256);
-                const vk = new Uint8Array(256);
-                for (const [scan, key] of row.keys) {
-                    di[scan] = 0x80;
-                    vk[key] = 0x80;
-                    if (key >= 0xa0 && key <= 0xa5) vk[[0x10, 0x11, 0x12][(key-0xa0) >> 1]] = 0x80;
-                }
                 end += row.count;
-                return {end, input: {di, vk}};
+                return {end, input: frameInput(row)};
             });
             return {key: segment.key, rows, length: end};
         });

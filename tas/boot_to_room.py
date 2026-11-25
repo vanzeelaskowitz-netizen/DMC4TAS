@@ -13,7 +13,7 @@ from hashlib import sha256
 from client import Client, STATE, remove_state
 from record_boot import OUTPUT, connect, wait_title
 from tasctl import ROOT
-from timeline import parse_script
+from timeline import parse_script, wire_keys
 
 GAME = "DevilMayCry4SpecialEdition.exe"
 SYSTEM_KEYS = {"LeftAlt", "RightAlt", "Tab", "LeftWin", "RightWin"}   # window switching, never game input
@@ -59,11 +59,11 @@ def build_plan(path=OUTPUT):
     for segment in segments:
         rows = []
         for keys in segment["frames"]:
-            codes = sorted(tuple(timeline.codes(name)) for name in keys)
-            if rows and rows[-1]["keys"] == codes:
+            wired = wire_keys(timeline, keys)
+            if rows and {k: rows[-1][k] for k in wired} == wired:
                 rows[-1]["count"] += 1
             else:
-                rows.append({"count": 1, "keys": codes})
+                rows.append({"count": 1, **wired})
         plan.append({"key": segment["key"], "rows": rows})
     return plan, sum(len(s["frames"]) for s in segments), last_input
 

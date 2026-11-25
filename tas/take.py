@@ -1,4 +1,4 @@
-"""Takes: the player plays, every frame's keyboard state is recorded, then it can be replayed and edited.
+"""Takes: the player plays, every frame's keyboard (and on DX9 gamepad) state is recorded, then it can be replayed and edited.
 
 A take starts at the frame gate in a room with a character. That frame becomes timeline frame 0 and
 gets a snapshot. The game then runs at 60 frames per second on the fixed clock while the player
@@ -13,6 +13,7 @@ import time
 
 from keycodes import KEY_CODES
 from lang import L
+from pad import is_pad
 from record_boot import Recording
 from rollback import describe_state, fingerprint, input_prefix
 from tasctl import ROOT
@@ -146,7 +147,7 @@ def strip_tool_keys(timeline):
     cleaned = Timeline()
     cleaned.bindings.update(timeline.bindings)
     for start_frame, end_frame, keys in timeline.rows:
-        kept = frozenset(name for name in keys if timeline.codes(name)[0] not in TOOL_DIKS)
+        kept = frozenset(name for name in keys if is_pad(name) or timeline.codes(name)[0] not in TOOL_DIKS)
         if cleaned.rows and cleaned.rows[-1][2] == kept and cleaned.rows[-1][1] == start_frame - 1:
             first, _, same = cleaned.rows[-1]
             cleaned.rows[-1] = (first, end_frame, same)

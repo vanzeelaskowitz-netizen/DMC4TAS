@@ -63,6 +63,28 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(script.codes("Q"),(0x10,65))
         self.assertEqual(KEY_CODES["Q"],(0x10,81))
 
+    def test_pad_tokens(self):
+        from work.pad import state, tokens
+        from work.timeline import format_frames, wire_keys
+        script = parse_script("2 J pada padls=0.50/-1 PadLT\npadrt=0.25 padrs=0/0\n-\n")
+        self.assertEqual(script.rows[0][2], {"J", "PadA", "PadLS=0.5/-1", "PadLT"})
+        self.assertEqual(script.rows[1][2], {"PadRT=0.25"})        # a stick at rest is no token
+        self.assertEqual(wire_keys(script, script.rows[0][2]),
+                         {"keys": [tuple(KEY_CODES["J"])], "pad": [0x4000, 0.5, -1.0, 0, 0, 1.0, 0]})
+        self.assertEqual(wire_keys(script, frozenset({"J"}))["pad"], None)
+        self.assertEqual(parse_script(format_frames(script)).rows, script.rows)
+        self.assertEqual(parse_script("1-2: K PadB\n3: -\n").rows[0][2], {"K", "PadB"})
+        for bad in ("PadLS=2/0", "PadLS=0.5", "PadLT=-1", "PadRT=x"):
+            with self.assertRaises(ValueError):
+                parse_script(bad + "\n")
+        # A recorded state (float32 values from the game) comes back unchanged through its tokens.
+        recorded = [0x4000 | 0x8, -1.0000305, 0.123456789, 0, 0, 0.0039215689, 1.0]
+        back = state(tokens(recorded))
+        self.assertEqual(back[0], recorded[0])
+        import struct
+        f32 = lambda v: struct.unpack("<f", struct.pack("<f", v))[0]
+        self.assertEqual([f32(v) for v in back[1:]], [f32(v) for v in recorded[1:]])
+
 
 if __name__ == "__main__":
     unittest.main()

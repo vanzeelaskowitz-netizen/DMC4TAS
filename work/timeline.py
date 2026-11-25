@@ -13,9 +13,11 @@ import re
 
 if __package__:
     from .keycodes import KEY_CODES, KeyCodes
+    from .pad import canonical as pad_token, is_pad, state as pad_state
     from tas.lang import L
 else:
     from keycodes import KEY_CODES, KeyCodes
+    from pad import canonical as pad_token, is_pad, state as pad_state
     from lang import L
 
 
@@ -73,10 +75,17 @@ def validate_mapping(script):
     expected = 1
     for start, end, keys in script.rows:
         for name in validate_row(start, end, keys, expected):
+            if is_pad(name):
+                continue
             dik, _ = script.codes(name)
             if used.setdefault(dik, name) != name:
                 raise ValueError(f"{name} and {used[dik]} share DIK {dik:#x}; use one spelling")
         expected = end + 1
+
+
+def wire_keys(script, keys):
+    """One frame as the agent takes it: keyboard [DIK, VK] pairs and the pad state (pad.py)."""
+    return {"keys": sorted(tuple(script.codes(name)) for name in keys if not is_pad(name)), "pad": pad_state(keys)}
 
 
 RANGE_LINE = re.compile(r"\s*[0-9]+\s*(-\s*[0-9]+\s*)?:")
@@ -89,6 +98,13 @@ ALIASES = {"shift": "LeftShift", "ctrl": "LeftCtrl", "alt": "LeftAlt", "esc": "E
 def canonical_names(bindings):
     """Lower-case spelling -> the one accepted spelling, for forgiving input in frame lists."""
     return ALIASES | {name.casefold(): name for name in (*KEY_CODES, *bindings)}
+
+
+def token_name(token, names):
+    """The accepted spelling of a key or pad token (see pad.py), "" for a pad value at rest, None
+    for an unknown token. A malformed pad value raises ValueError."""
+    name = names.get(token.casefold())
+    return name if name is not None else pad_token(token)
 
 
 def frame_line(line, names):
@@ -111,10 +127,11 @@ def frame_line(line, names):
     for token in tokens:
         if token in NO_KEYS:
             continue
-        name = names.get(token.casefold())
+        name = token_name(token, names)
         if name is None:
             raise ValueError(L(f"不认识的键名 {token}", f"Unknown key name {token}"))
-        keys.add(name)
+        if name:
+            keys.add(name)
     return count, frozenset(keys)
 
 
@@ -202,7 +219,7 @@ def expand_line(line, names):
         return None
     keys = []
     for token in tokens[1:]:
-        name = names.get(token.casefold())
+        name = token_name(token, names)
         if name and name not in keys:
             keys.append(name)
     row = " ".join(keys)
@@ -305,7 +322,8 @@ def parse_ranges(text):
                 raise ValueError("Expected START[-END]: KEY KEY or START[-END]: -")
             start, end, names = match.groups()
             start, end = int(start), int(end or start)
-            held = validate_row(start, end, [] if names=="-" else names.split(), expected)
+            tokens = [] if names == "-" else [pad_token(n) if pad_token(n) is not None else n for n in names.split()]
+            held = validate_row(start, end, [n for n in tokens if n], expected)
             script.rows.append((start,end,held))
             expected = end+1
         except ValueError as err:

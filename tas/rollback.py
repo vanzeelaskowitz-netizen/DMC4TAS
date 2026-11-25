@@ -8,7 +8,7 @@ from time import perf_counter
 
 from lang import L
 from rollback_memory import MEM_IMAGE, MEM_PRIVATE, PAGE, WRITTEN, ProcessMemory, changed_runs
-from timeline import Timeline, read_script
+from timeline import Timeline, read_script, wire_keys
 
 
 DEFAULT_INTERVAL = 120
@@ -621,7 +621,8 @@ def input_prefix(timeline, end):
         if start > end:
             break
         stop = min(stop, end)
-        state = tuple(sorted(timeline.codes(key) for key in keys))
+        wired = wire_keys(timeline, keys)
+        state = tuple(map(tuple, wired["keys"])) + ((tuple(wired["pad"]),) if wired["pad"] else ())
         if result and result[-1][1] == state:
             result[-1] = (stop, state)
         else:

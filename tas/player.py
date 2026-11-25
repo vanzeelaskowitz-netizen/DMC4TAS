@@ -1581,6 +1581,11 @@ class Player:
                 self.highlight()
             return
         self.control_button.configure(text=L("⏵ 交还操作", "⏵ Hand back"))
+        # A script that another client (a tool, the MCP server) loaded while this window has none.
+        running = state.get("timelinePath")
+        if (running and self.path is None and not self.editor.get("1.0", "end-1c").strip()
+                and Path(running).is_file()):
+            self.load(Path(running))
         self.show(state.get("last"), state.get("timelineFrame", 0))
         if state.get("sceneBlocked"):
             self.stop_playing()
