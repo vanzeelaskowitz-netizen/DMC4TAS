@@ -838,7 +838,7 @@ try {
                 if (!stopped) combat.cheat();       // practice aids, once per frame before it runs
                 if (this.tasFrame) combat.begin(this.threadId);
             } catch (err) {
-                failure = String(err);
+                failure = err.stack || String(err);       // the stack names the line that failed
                 mode = 'shutdown';
                 parked = false;
                 shutdownAtGate();
@@ -868,7 +868,7 @@ try {
                 }
                 if (row.step) pending.push(row);
             } catch (err) {
-                failure = String(err);
+                failure = err.stack || String(err);
                 mode = 'shutdown';
             } finally {
                 current = null;
@@ -1610,9 +1610,12 @@ function invalidateDevice(reason) {
 // game's line cast sDevil4Collision::findIntersection (as dmc4_hook's Collision.cpp calls it:
 // CollParam in EAX; instance, segment, both sides, hit out on the stack; callee pops 16 bytes).
 // The stub keeps ESI, which the cast uses for its own query.
+// A NativeFunction does not keep the memory of its code alive: the stub page stays referenced here,
+// or the garbage collector frees it and the next cast jumps into unmapped memory (2026-11-27).
+let groundStub = null;
 const groundRay = build.enemyGround && (() => {
     const g = build.enemyGround;
-    const stub = Memory.alloc(Process.pageSize);
+    const stub = groundStub = Memory.alloc(Process.pageSize);
     Memory.patchCode(stub, 64, code => {
         const w = new X86Writer(code, {pc: stub});
         w.putPushReg('ebp');
