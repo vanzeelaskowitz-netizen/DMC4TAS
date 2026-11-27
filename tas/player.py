@@ -79,7 +79,12 @@ class Player:
         self.now_line = None        # editor line that holds the current frame
         self.pending = None         # timer of an edit that has not been applied yet
         self.unsent = False         # the service does not have the editor's script yet
+        self.applied = ""           # the editor text that was last saved and handed on (see flush_edit)
         self.script_error = None
+        # Without a console (pythonw) an error inside a button or key handler vanished without a
+        # trace, and whatever the handler still had to do (such as saving an edit) silently did not
+        # happen. Keep it in a file and say so in the window.
+        root.report_callback_exception = self.callback_error
         root.title(L("DMC4 逐帧播放器", "DMC4 Frame Player"))
         root.configure(bg=BG)
         root.attributes("-topmost", True)
@@ -202,14 +207,13 @@ class Player:
                        fg=INK, selectcolor=PANEL, activebackground=BG, activeforeground=INK, bd=0,
                        highlightthickness=0)
         self.sound_button.pack(side="right")
-        self.fold_all = tk.BooleanVar(value=True)
-        tk.Checkbutton(moves, text=L("折叠相同行", "Fold identical rows"), variable=self.fold_all, font=ui, bg=BG, fg=INK,
-                       selectcolor=PANEL, activebackground=BG, activeforeground=INK, bd=0, highlightthickness=0,
-                       command=lambda: (self.fold_flip.clear(), self.refold())).pack(side="right")
         tk.Button(files, text=L("↑ 同键全选", "↑ Select same key"), command=lambda: self.select_run(-1),
                   font=ui).pack(side="left", padx=(14, 0))
         tk.Button(files, text=L("↓ 同键全选", "↓ Select same key"), command=lambda: self.select_run(+1),
                   font=ui).pack(side="left", padx=6)
+        # Lock-on is usually held through a whole combo: one click writes Space on every row.
+        tk.Button(files, text=L("全部 Space", "Space on all"), command=lambda: self.key_on_all("Space"),
+                  font=ui).pack(side="left")
         tk.Label(moves, text=L("跳到", "Go to frame"), bg=BG, fg=DIM, font=ui).pack(side="left", padx=(12, 4))
         self.entry2 = tk.Entry(moves, width=7, font=mono, justify="right")
         self.entry2.pack(side="left")
@@ -245,7 +249,7 @@ class Player:
                               "写 5 S 再换行，会自动列成 5 行 S　　# 后面是注释\n"
                               "右边一栏是角色在那一帧的动画：第几帧 / 这段动画共几帧（走过的帧才有）\n"
                               "金色“MAX点”/ 红色“红刀点”：Q 写在那一行 = 充满 3 格 / +1 格（尼禄，走过的帧才有）\n"
-                              "双击左边的帧号，游戏直接跳到那一帧\n"
+                              "双击左边的帧号，游戏直接跳到那一帧　　Ctrl+F：查找按了某个键的行\n"
                               "光标放在一个键上按 Ctrl+Shift+↑/↓：连着的行里同一个键全选，可一起删或改",
                               "One row is one frame; the frame number is on the left. S W = press S and W together on this frame\n"
                               "To hold a key for several frames, write it on that many rows; an empty row = press nothing\n"
@@ -254,19 +258,34 @@ class Player:
                               "(played frames only)\n"
                               'Gold "MAX pt" / red "Exceed pt": Q on that row = fills all 3 bars / +1 bar '
                               "(Nero, played frames only)\n"
-                              "Double-click a frame number on the left to jump the game to that frame\n"
+                              "Double-click a frame number on the left to jump the game to that frame.  "
+                              "Ctrl+F: find the rows that press a key\n"
                               "Cursor on a key, then Ctrl+Shift+↑/↓: selects that key on the rows next to it, "
                               "to delete or change them all"),
                  bg=BG, fg=DIM, font=("Microsoft YaHei UI", 9), anchor="w", justify="left").pack(side="bottom", fill="x")
         box = tk.Frame(left, bg=PANEL)
         box.pack(fill="both", expand=True, pady=(4, 4))
+        # Ctrl+F: find the rows that press a key (whole key names, so S does not find Space).
+        self.find_bar = tk.Frame(left, bg=BG)
+        self.find_before = box
+        tk.Label(self.find_bar, text=L("查找键", "Find key"), bg=BG, fg=DIM, font=ui).pack(side="left")
+        self.find_text = tk.StringVar()
+        self.find_entry = tk.Entry(self.find_bar, width=12, font=mono, textvariable=self.find_text)
+        self.find_entry.pack(side="left", padx=6)
+        tk.Button(self.find_bar, text="▲", command=lambda: self.find_step(-1), font=ui, width=3).pack(side="left")
+        tk.Button(self.find_bar, text="▼", command=lambda: self.find_step(+1), font=ui, width=3).pack(side="left", padx=4)
+        self.find_label = tk.Label(self.find_bar, text="", bg=BG, fg=DIM, font=ui, anchor="w")
+        self.find_label.pack(side="left", padx=4)
+        tk.Button(self.find_bar, text="✕", command=self.close_find, font=ui, width=3).pack(side="right")
+        self.find_text.trace_add("write", lambda *_: self.find_marks())
+        self.find_entry.bind("<Return>", lambda _: self.find_step(+1))
+        self.find_entry.bind("<Shift-Return>", lambda _: self.find_step(-1))
+        self.find_entry.bind("<Escape>", lambda _: self.close_find())
+        for key in ("<Control-f>", "<Control-F>"):
+            window.bind(key, lambda event: None if event.widget is self.editor else self.open_find())
         self.gutter = tk.Canvas(box, width=GUTTER, bg="#181a1f", highlightthickness=0, bd=0)
         self.gutter.pack(side="left", fill="y")
         self.gutter.bind("<Double-Button-1>", self.gutter_jump)
-        self.gutter.bind("<Button-1>", self.toggle_fold)
-        # Folding of identical rows: runs (first line -> last line), which of them are folded now,
-        # the lines hidden by that, and the runs whose state was flipped by a click (by frame).
-        self.runs, self.folded, self.hidden, self.fold_flip = {}, {}, set(), set()
         scroll = ttk.Scrollbar(box, orient="vertical")
         scroll.pack(side="right", fill="y")
         # Right of the text: what the character was doing on each frame (from frames already played).
@@ -282,6 +301,7 @@ class Player:
         self.editor.tag_configure("now", background="#274b6d")
         self.editor.tag_configure("bad", foreground="#ff6b6b", underline=True)
         self.editor.tag_configure("comment", foreground=DIM)
+        self.editor.tag_configure("found", background="#6b5210", foreground="#ffe08a")
         self.editor.tag_raise("sel")
         self.editor.bind("<<Modified>>", self.edited)
         self.editor.bind("<Configure>", lambda _: self.draw_gutter())
@@ -291,13 +311,14 @@ class Player:
         self.editor.tag_configure("multi", background="#6b4f1d")
         self.editor.bind("<Control-Shift-Up>", lambda _: self.select_run(-1))
         self.editor.bind("<Control-Shift-Down>", lambda _: self.select_run(+1))
+        self.editor.bind("<Control-f>", self.open_find)
+        self.editor.bind("<Control-F>", self.open_find)
         self.editor.bind("<Escape>", self.editor_escape)
         self.editor.bind("<Key>", self.editor_key)
         self.editor.bind("<Button-1>", lambda event: (self.clear_multi(), self.click_row(event))[1])
         # A row written with a count ("5 S") is listed frame by frame as soon as the cursor leaves it.
         for event in ("<KeyRelease>", "<ButtonRelease-1>", "<FocusOut>"):
-            self.editor.bind(event, lambda _: (self.expand_counts(), self.refold()), add="+")
-        self.editor.tag_configure("fold", elide=True)
+            self.editor.bind(event, lambda _: self.expand_counts(), add="+")
         self.show_file()
 
         # The main window: what the game did on the current frame.
@@ -329,6 +350,18 @@ class Player:
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(50, self.connect)
         root.after(120, self.tick)
+
+    def callback_error(self, kind, error, trace):
+        import traceback
+        try:
+            log = ROOT / "logs" / "player-errors.txt"
+            log.parent.mkdir(exist_ok=True)
+            with log.open("a", encoding="utf-8") as file:
+                file.write(f"--- {datetime.now():%Y-%m-%d %H:%M:%S}\n" + "".join(traceback.format_exception(kind, error, trace)))
+            self.note(L(f"播放器内部出错：{error}（已记到 logs\\player-errors.txt）",
+                        f"Internal error in the player: {error} (written to logs\\player-errors.txt)"), bad=True)
+        except Exception:
+            pass
 
     # --- service -------------------------------------------------------------------------------
     def connect(self):
@@ -858,10 +891,19 @@ class Player:
                 cursor = None
         except KeyError:
             cursor = None
+        # Keys are kept one blank apart. A key typed after a long run of blanks sat outside the
+        # visible part of its row, and the game pressed a key nobody could see (2026-11-27).
+        tidied = False
+        for number, line in enumerate(self.editor.get("1.0", "end-1c").split("\n"), 1):
+            code, mark, comment = line.partition("#")
+            tidy = " ".join(code.split())
+            if number != cursor and tidy != code.strip():
+                self.editor.replace(f"{number}.0", f"{number}.end", tidy + (" " if tidy and mark else "") + mark + comment)
+                tidied = True
         changes = expand_lines(self.editor.get("1.0", "end-1c"), skip=cursor)
         for number, rows in reversed(changes):
             self.editor.replace(f"{number}.0", f"{number}.end", "\n".join(rows))
-        return bool(changes)
+        return bool(changes) or tidied
 
     def set_editor(self, text):
         """Replace the editor's text (a file was opened, a take ended); not an edit by the user."""
@@ -872,6 +914,7 @@ class Player:
         self.editor.edit_reset()
         self.editor.edit_modified(False)
         self.editor.configure(state=state)
+        self.applied = self.editor.get("1.0", "end-1c")
         if self.pending is not None:
             self.root.after_cancel(self.pending)
             self.pending = None
@@ -895,58 +938,7 @@ class Player:
                 self.length = entry[0] + entry[1] - 1
             if "#" in line:
                 self.editor.tag_add("comment", f"{number}.{line.index('#')}", f"{number}.end")
-        self.compute_folds(text)
         return text
-
-    def compute_folds(self, text=None):
-        """Fold runs of identical rows: a key held for 19 frames is shown as its first row, with
-        "1–19" in the gutter, and the other 18 rows hidden. Display only; the text is untouched.
-        The run the cursor is typing in stays open, so a row never vanishes under the cursor."""
-        if text is None:
-            text = self.editor.get("1.0", "end-1c")
-        lines = text.split("\n")
-        runs, start, previous = {}, None, None
-        for number in range(1, len(self.line_map) + 2):
-            entry = self.line_map[number - 1] if number <= len(self.line_map) else None
-            key = None
-            if isinstance(entry, tuple) and entry[1] == 1 and "#" not in lines[number - 1]:
-                key = " ".join(sorted(item[0].casefold() for item in self.tokens(lines[number - 1])))
-            if key is None or key != previous:
-                if start is not None and number - start >= 3:
-                    runs[start] = number - 1
-                start = number if key is not None else None
-            previous = key
-        try:
-            cursor = int(self.editor.index("insert").split(".")[0]) if self.editor.focus_get() is self.editor else 0
-        except KeyError:
-            cursor = 0
-        folded = {}
-        for first, last in runs.items():
-            wanted = self.fold_all.get() != (self.line_map[first - 1][0] in self.fold_flip)
-            if wanted and not first < cursor <= last:
-                folded[first] = last
-        self.runs = runs
-        if folded != self.folded:
-            self.folded = folded
-            self.hidden = {line for first, last in folded.items() for line in range(first + 1, last + 1)}
-            self.editor.tag_remove("fold", "1.0", "end")
-            for first, last in folded.items():
-                self.editor.tag_add("fold", f"{first + 1}.0", f"{last + 1}.0")
-
-    def refold(self):
-        before = self.folded
-        self.compute_folds()
-        if self.folded is not before:
-            self.highlight()
-
-    def toggle_fold(self, event):
-        """Click on the gutter: open or close the run of identical rows that starts there."""
-        for top, height, number, kind, frame in self.screen_rows():
-            if top <= event.y < top + height and number in self.runs:
-                self.fold_flip ^= {frame}
-                self.editor.mark_set("insert", f"{number}.0")
-                self.refold()
-                return
 
     def highlight(self):
         """Mark the line whose input produced the frame on screen, and say how far into it we are."""
@@ -955,14 +947,8 @@ class Player:
         progress = ""
         for number, entry in enumerate(self.line_map, 1):
             if isinstance(entry, tuple) and entry[0] <= self.frame < entry[0] + entry[1]:
-                shown = number
-                if number in self.hidden:       # inside a folded run: light up the row that stands for it
-                    shown = max(first for first in self.folded if first < number)
-                    first, last = self.line_map[shown - 1][0], self.line_map[self.folded[shown] - 1][0]
-                    progress = L(f"（折叠在第 {first}–{last} 帧那一行里）",
-                                 f" (inside the folded row for frames {first}–{last})")
-                self.now_line = shown
-                self.editor.tag_add("now", f"{shown}.0", f"{shown}.0 lineend +1c")
+                self.now_line = number
+                self.editor.tag_add("now", f"{number}.0", f"{number}.0 lineend +1c")
                 if entry[1] > 1:
                     progress = L(f"　这一行的第 {self.frame - entry[0] + 1}/{entry[1]} 帧",
                                  f"  frame {self.frame - entry[0] + 1}/{entry[1]} of this row")
@@ -997,19 +983,13 @@ class Player:
                 self.gutter.create_text(GUTTER - 6, top, anchor="ne", text="!", font=self.mono, fill="#ff6b6b")
             elif kind == "row":
                 colour = ACCENT if number == self.now_line else DIM
-                label = str(frame)
-                if number in self.folded:       # a folded run: the frames it stands for
-                    label = f"{frame}–{self.line_map[self.folded[number] - 1][0]}"
-                self.gutter.create_text(GUTTER - 6, top, anchor="ne", text=label, font=self.mono, fill=colour)
-                if number in self.runs:
-                    self.gutter.create_text(4, top, anchor="nw", text="▸" if number in self.folded else "▾",
-                                            font=self.mono, fill=WARN if number in self.folded else "#596170")
+                self.gutter.create_text(GUTTER - 6, top, anchor="ne", text=str(frame), font=self.mono, fill=colour)
         self.draw_info()
 
     def screen_rows(self):
         """[(y, height, line, kind, frame)] of the rows shown in the script box. kind: "row" (a
         frame), "error", "comment", or "ghost" for the still empty rows down to the bottom of the
-        box. Rows hidden inside a folded run are not on screen."""
+        box."""
         written = len(self.line_map)
         last_line = int(self.editor.index("end-1c").split(".")[0])
         number = int(self.editor.index("@0,0").split(".")[0])
@@ -1018,9 +998,6 @@ class Player:
             if number > last_line:
                 ended = True
                 break
-            if number in self.hidden:
-                number += 1
-                continue
             box = self.editor.dlineinfo(f"{number}.0")
             if box is None:
                 break
@@ -1152,21 +1129,15 @@ class Player:
             found = self.motion_at(frame)
             if not found:
                 continue
-            # Red blade: a coloured row with a label at its right end. A folded run of rows shows
-            # the best frame inside it and which frame that is.
-            last = self.line_map[self.folded[number] - 1][0] if number in self.folded else frame
-            marks = [(at, self.exceed_at(at)) for at in range(frame, last + 1)]
-            marks = [(at, mark) for at, mark in marks if mark]
-            if marks:
-                done = [item for item in marks if item[1][1]]
-                at, (what, hit) = (done or sorted(marks, key=lambda item: item[1][0] != "max"))[0]
+            # Red blade: a coloured row with a label at its right end.
+            mark = self.exceed_at(frame)
+            if mark:
+                what, hit = mark
                 back, ink = self.EXCEED_LOOK[what]
                 label = L({"max": "MAX", "ex": "红刀", "rev": "充能"}[what],
                           {"max": "MAX", "ex": "Exceed", "rev": "Rev"}[what])
                 label = L(("★" + label + "成功") if hit else (label + "点"),
                           ("★ " + label + " ok") if hit else (label + " pt"))
-                if last > frame:
-                    label += L(f" 第{at}帧", f" @{at}")
                 self.info.create_rectangle(0, top, width, top + height, fill=back, outline="")
                 badge = (label, back, ink)
             else:
@@ -1174,16 +1145,8 @@ class Player:
             index, total, entry = found
             action, motion = entry[0], entry[1]
             first = index == 1
-            # The frames within the animation; a folded run shows how far it gets within the run.
-            span, after = index, ""
-            if number in self.folded:
-                final = self.motion_at(self.line_map[self.folded[number] - 1][0])
-                if final and final[2][1] == motion and final[0] > index:
-                    span = f"{index}–{final[0]}"
-                elif final:
-                    after = L(f" → 动画{final[2][1]}", f" → mot {final[2][1]}")
-            text = L(f"动画{motion}  {span}/{total if total else '…'}", f"mot {motion} {span}/{total if total else '…'}")
-            text = ("▸ " if first else "") + text + after
+            text = L(f"动画{motion}  {index}/{total if total else '…'}", f"mot {motion} {index}/{total if total else '…'}")
+            text = ("▸ " if first else "") + text
             self.info.create_text(8, top, anchor="nw", text=text, font=("Consolas", 10),
                                   fill=ACCENT if frame == self.frame else ("#e6e8eb" if first else DIM))
             if badge:                           # on top of the animation text, on its own patch
@@ -1208,6 +1171,93 @@ class Player:
             elif start is None:
                 start = column
         return found
+
+    # --- find (Ctrl+F) -------------------------------------------------------------------------
+    def open_find(self, _=None):
+        self.find_bar.pack(fill="x", pady=(4, 0), before=self.find_before)
+        self.find_entry.focus_set()
+        self.find_entry.selection_range(0, "end")
+        self.find_marks()
+        return "break"                  # not the text box's own Ctrl+F (cursor one character on)
+
+    def close_find(self):
+        self.find_bar.pack_forget()
+        self.editor.tag_remove("found", "1.0", "end")
+        self.editor.focus_set()
+        return "break"
+
+    def find_marks(self):
+        """Colour every key that is searched for, on the rows that press all of them, and return
+        those rows as [(line, column of the first such key)]. "J" finds the rows with J; "Space J"
+        the rows that press both. Rows match wherever on the row the key is written."""
+        self.editor.tag_remove("found", "1.0", "end")
+        wanted = {item[0].casefold() for item in self.tokens(self.find_text.get())}
+        rows = []
+        if wanted:
+            for line, text in enumerate(self.editor.get("1.0", "end-1c").split("\n"), 1):
+                keys = [item for item in self.tokens(text) if item[0].casefold() in wanted]
+                if {item[0].casefold() for item in keys} == wanted:
+                    rows.append((line, keys[0][1]))
+                    for _, first, end in keys:
+                        self.editor.tag_add("found", f"{line}.{first}", f"{line}.{end}")
+        self.find_label.configure(text=(L(f"共 {len(rows)} 行", f"{len(rows)} rows") if rows else
+                                        L("没有找到", "Not found")) if wanted else "", fg=DIM if rows or not wanted else WARN)
+        return rows
+
+    def find_step(self, direction):
+        """Put the cursor on the next (+1) or previous (-1) row found, going round at the ends."""
+        rows = self.find_marks()
+        if not rows:
+            return "break"
+        here = int(self.editor.index("insert").split(".")[0])
+        later = [item for item in rows if item[0] > here] if direction > 0 else [item for item in rows if item[0] < here]
+        line, column = (later[0] if direction > 0 else later[-1]) if later else rows[0 if direction > 0 else -1]
+        self.editor.mark_set("insert", f"{line}.{column}")
+        self.editor.see(f"{line}.{column}")
+        entry = self.line_map[line - 1] if line <= len(self.line_map) else None
+        where = L(f"第 {entry[0]} 帧", f"frame {entry[0]}") if isinstance(entry, tuple) else L(f"第 {line} 行", f"row {line}")
+        self.find_label.configure(text=L(f"{rows.index((line, column)) + 1}/{len(rows)}　{where}",
+                                         f"{rows.index((line, column)) + 1}/{len(rows)}  {where}"), fg=INK)
+        return "break"
+
+    def key_on_all(self, key):
+        """Write a key on every frame row that lacks it (the selected rows when there is a
+        selection, else the whole script); when all of them have it already, take it off again."""
+        if str(self.editor.cget("state")) != "normal":
+            return
+        lines = self.editor.get("1.0", "end-1c").split("\n")
+        try:
+            first, last = (int(self.editor.index(mark).split(".")[0]) for mark in ("sel.first", "sel.last"))
+            if self.editor.index("sel.last").endswith(".0") and last > first:
+                last -= 1                   # a selection that ends at the start of a row leaves it out
+        except tk.TclError:
+            first, last = 1, len(lines) - (1 if lines[-1] == "" and len(lines) > 1 else 0)
+        rows = [number for number in range(first, last + 1)
+                if number <= len(self.line_map) and isinstance(self.line_map[number - 1], tuple)]
+        has = {number: [item for item in self.tokens(lines[number - 1]) if item[0].casefold() == key.casefold()]
+               for number in rows}
+        if not rows:
+            return
+        add = not all(has.values())
+        self.editor.edit_separator()
+        for number in rows:
+            line = lines[number - 1]
+            if add and not has[number]:
+                found = self.tokens(line)
+                at = found[-1][2] if found else 0
+                self.editor.insert(f"{number}.{at}", (" " if found else "") + key + (" " if line[at:at + 1] == "#" else ""))
+            elif not add:
+                final = self.tokens(line)[-1][2]
+                for _, start, end in reversed(has[number]):
+                    if end == final:
+                        start = len(line[:start].rstrip())      # last key of the row: the blank before it
+                    else:
+                        while line[end] == " ":
+                            end += 1                            # otherwise the blank after it
+                    self.editor.delete(f"{number}.{start}", f"{number}.{end}")
+        self.editor.edit_separator()
+        self.note(L(f"{'已在' if add else '已从'} {len(rows)} 行{'加上' if add else '去掉'} {key}（Ctrl+Z 可撤销）",
+                    f"{key} {'added to' if add else 'removed from'} {len(rows)} rows (Ctrl+Z undoes it)"))
 
     def select_run(self, direction):
         """Mark the key under the cursor (or the selection) on this row and on every row directly
@@ -1354,8 +1404,14 @@ class Player:
         self.pending = self.root.after(400, self.apply_script)
 
     def flush_edit(self):
+        """Before any frame command: apply an edit that is still waiting. Also one whose change
+        notice never arrived: what counts is whether the text differs from what was last saved
+        (2026-11-27: a deleted key stayed in the file and the game kept pressing it)."""
         if self.pending is not None:
             self.root.after_cancel(self.pending)
+            self.apply_script()
+        elif str(self.editor.cget("state")) == "normal" and self.editor.get("1.0", "end-1c") != self.applied:
+            self.editor.edit_modified(False)
             self.apply_script()
 
     def apply_script(self):
@@ -1387,6 +1443,7 @@ class Player:
         except OSError as error:
             self.note(L(f"脚本存不了：{error}", f"Can't save the script: {error}"), bad=True)
             return False
+        self.applied = text
         self.show_file()
         self.unsent = True
         self.push_script()

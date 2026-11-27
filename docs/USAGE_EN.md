@@ -188,7 +188,7 @@ If "**The character read no input on this frame**" appears, the game's own pause
 ### Script window "DMC4 Input script"
 
 1. **New**, **Open…**, **Save as…**; **↑ Select same key**, **↓ Select same key**; on the right, the "**Sound effects**" checkbox.
-2. **⏮**, **◀ 1**, **▶ Play**, **1 ▶**; the "**Go to frame** [ ]" box; on the right, the "**Fold identical rows**" checkbox.
+2. **⏮**, **◀ 1**, **▶ Play**, **1 ▶**; the "**Go to frame** [ ]" box.
 3. **Save**, **Load ▾** (tutorial 5 in section 5).
 4. Progress bar and the current frame number.
 5. File name line: `script-20261125-101500.tas  120 frames  (auto-saved)`. A ⚠ means this script was recorded at a different frame rate from the current one (section 11).
@@ -216,8 +216,7 @@ Goal: learn to record, play back and edit a script.
 
 Tips:
 
-- 3 or more identical rows in a row are folded into one ("Fold identical rows"); the frame-number column on the left shows the range it covers (for example 1–19) with a triangle.
-  A single click on that frame number expands it (or folds it again); a double click jumps the game to that frame.
+- A double click on a frame number in the left column jumps the game to that frame.
 - To delete every `J` in a stretch at once: put the cursor on any `J` and press `Ctrl+Shift+↑` or `↓` (or the "Select same key" buttons);
   all the `J`s in the adjacent rows are selected. Press `Delete` to remove them, or just type to replace them.
 
@@ -259,7 +258,6 @@ Goal: use the marks in the right column to press Exceed on exactly the right fra
    - gold "**MAX pt**": write the Exceed key (`Q` in the samples) on this row and the Exceed gauge fills all 3 bars at once.
    - red "**Exceed pt**": write it on this row for +1 bar.
 3. Add `Q` to the gold row (only this row; the row before it must not have `Q`). After the replay, this row shows "**★ MAX ok**" and the Exceed gauge in the state panel goes to 3.
-4. A folded stretch shows only the best frame in it and that frame's number; click its frame number on the left to expand it and see every frame.
 
 The length of the Exceed window changes with hit stop and game speed, so there is no fixed frame table: **go by the marks you actually step through**.
 Marks appear only on frames you have stepped through; if you change earlier input, you have to step through again to update them.
@@ -356,7 +354,7 @@ J            # frame 3: press only J
 - Text after `#` is a comment, both on a line of its own and at the end of a row; a whole-line comment takes no frame.
 - Separate key names with spaces or commas; case doesn't matter. To hold a key for several frames, write it on that many consecutive rows; on a row where it isn't written, it is released for that frame.
 - To press a number key, write `1 5` (1 frame, press 5).
-- A single click on a frame number in the left column only folds or unfolds a folded run; a double click jumps the game to that frame.
+- A frame number in the left column needs a double click to jump the game to that frame.
 - To get to a frame below the last written row, click in the empty script area on the row of that frame: the cursor lands there, and the rows in between are filled with empty rows.
 - New scripts are saved automatically in `runs\` as you edit; an opened file is saved back to where it is. A change takes effect 0.4 s after you stop editing.
 
